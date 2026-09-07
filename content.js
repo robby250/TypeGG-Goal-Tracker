@@ -11757,6 +11757,27 @@ async function getExpRankByUsername(username) {
     reconcileRivalsForQuote(quoteId);
     renderAllGoals();
 
+    // Only a server PP BELOW the cached one is evidence for the full wipe. That
+    // wipe exists for exactly one reason — rivalMergeEntry ratchets on PP, so it
+    // can never lower a stale-HIGH entry and only a re-bulk can (see
+    // refetchAllPpStores). Every other disagreement is already corrected in place
+    // above, so counting it here only schedules a pointless ~250-page rebuild of
+    // every store. Two chronic sources used to land in this log and made that
+    // rebuild self-sustaining:
+    //   • WPM-only drift — the PP ratchet DROPS a higher-WPM/lower-PP race whole,
+    //     so the stored wpm lags the server's bestRace BY DESIGN (see the
+    //     RIVALDIAG ratchet-drop probe in rivalMergeEntry). Chronic for anyone
+    //     racing regularly, and never something a re-bulk prevents recurring.
+    //   • A missed PB — server HIGHER than cache, which the ratchet heals itself.
+    // Four of either within 24h wiped all stores, which re-seeded from bestRace,
+    // drifted again within a few races, and wiped again: the "syncing from 0 over
+    // and over" loop. A real rebalance still escalates, because it lowers PP.
+    const serverLowered = Number(live.pp) < Number(cached.pp) - PP_REBALANCE_EPS;
+    if (!serverLowered) {
+      console.warn(`[Goal Tracker] Server/cache mismatch on quote ${quoteId} (pp ${cached.pp} → ${live.pp}, wpm ${cached.wpm} → ${liveWpm}) — reconciled in place; not rebalance evidence (server PP not lowered).`);
+      return;
+    }
+
     // Only a BROAD disagreement confirms a real server-side rebalance. Until the
     // distinct-quote count crosses the threshold (within the TTL window), treat
     // each mismatch as isolated (already fixed in place above) rather than
@@ -11767,11 +11788,11 @@ async function getExpRankByUsername(username) {
     savePpMismatchLog(mlog);
     const distinct = Object.keys(mlog).length;
     if (distinct < PP_REBALANCE_ESCALATE) {
-      console.warn(`[Goal Tracker] Server/cache mismatch on quote ${quoteId} (pp ${cached.pp} → ${live.pp}, wpm ${cached.wpm} → ${liveWpm}) — reconciled in place (${distinct}/${PP_REBALANCE_ESCALATE} distinct within 24h before a full re-sync).`);
+      console.warn(`[Goal Tracker] Server LOWERED pp on quote ${quoteId} (${cached.pp} → ${live.pp}) — reconciled in place (${distinct}/${PP_REBALANCE_ESCALATE} distinct within 24h before a full re-sync).`);
       return;
     }
 
-    console.warn(`[Goal Tracker] PP rebalance confirmed — ${distinct} distinct quotes disagreed with the server within 24h; re-fetching all PP stores.`);
+    console.warn(`[Goal Tracker] PP rebalance confirmed — ${distinct} distinct quotes had their pp LOWERED server-side within 24h; re-fetching all PP stores.`);
     savePpMismatchLog({});
     refetchAllPpStores();
   }
