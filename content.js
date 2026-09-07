@@ -1848,6 +1848,9 @@ function gtMain() {
   // huge goal card at a low page zoom); the viewport clamp in
   // applyWidgetPosition keeps even an oversized widget reachable on-screen.
   const GT_MIN_SCALE = 0.6, GT_MAX_SCALE = Infinity;
+  // How long a widget's height must stay unchanged before its position is
+  // considered "settled" and locked to top-left (see observeWidgetResize).
+  const GT_SETTLE_MS = 1500;
   function gtWidgetScale(widgetEl) {
     const s = parseFloat(widgetEl.dataset.gtScale);
     return Number.isFinite(s) && s > 0 ? s : 1;
@@ -2306,7 +2309,7 @@ function gtMain() {
   // doesn't spam saveGroups(). One observer per widget; when the
   // widget is removed from the DOM the observer becomes inert.
   function observeWidgetResize(widgetEl, groupId) {
-    let t, lastH = 0;
+    let t, lastH = 0, settleTimer = 0;
     new ResizeObserver(() => {
       // Height changes flow through two distinct cases:
       //   1. FIRST populated layout — a restored widget was created (near-)
@@ -2338,17 +2341,33 @@ function gtMain() {
         lastH = h;
         const populated = !!widgetEl.querySelector(".gt-goal-section");
         if (populated && !wDrag && !dragInProgress) {
-          const firstPlace = widgetEl.dataset.gtPlaced !== "1";
-          widgetEl.dataset.gtPlaced = "1";
+          const alreadyPlaced = widgetEl.dataset.gtPlaced === "1";
           const group = groupData[groupId];
-          if (group && group.position) {
-            if (firstPlace) {
+          // Goal sections stream in over several seconds as their async data
+          // resolves (rank @3s, exp-rank @6s, max-quotes @12s, race-reqs @15s
+          // — see startLeaderIntervals / reconcileGoalOrder's comment above),
+          // and even once a section exists its OWN sub-content (rival
+          // standings, sync/filtered lines, avg-acc thresholds, countdown
+          // rows, ...) can keep growing it well after it first mounts — so
+          // counting sections isn't enough to know the widget's final
+          // height. Locking gtPlaced on an early height change used to
+          // freeze a bottom/centre-anchored widget's top at whatever height
+          // had been reached so far; later growth then only extended the
+          // widget DOWNWARD from that too-early top, visibly pushing it past
+          // where it was actually placed. So keep RE-projecting the stored
+          // anchors at the real height on every change, and only lock
+          // top-left ("grow in place") once the height has gone QUIET for a
+          // beat — no further change for GT_SETTLE_MS.
+          if (!alreadyPlaced) {
+            if (group && group.position) {
               applyWidgetPosition(widgetEl, normalizeGroupPosition(group, widgetEl));
-            } else {
-              // Keep top-left; sync anchors to the new rect (guarded — see
-              // refreshGroupAnchors). Persisted by the debounced save below.
-              refreshGroupAnchors(groupId);
             }
+            clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => { widgetEl.dataset.gtPlaced = "1"; }, GT_SETTLE_MS);
+          } else if (group && group.position) {
+            // Keep top-left; sync anchors to the new rect (guarded — see
+            // refreshGroupAnchors). Persisted by the debounced save below.
+            refreshGroupAnchors(groupId);
           }
         }
       }
