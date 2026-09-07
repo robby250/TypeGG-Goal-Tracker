@@ -1587,13 +1587,27 @@ function gtMain() {
       const mqChips  = pop.querySelector(".gt-edit-mq-lang-chips");
 
       function mqApply() {
+        // The scope defines the goal now, so changing it re-points the goal at
+        // a different slice of the catalog. Two things must not survive that:
+        //   • baselineQuotes — locked against the OLD scope, so keeping it
+        //     makes gain (typed - baseline) meaningless, and negative often
+        //     enough to clamp at 0. Clearing it re-locks on the next ready
+        //     render, exactly as it did at creation. Only for a FILTERED goal:
+        //     the stat path computes target as `total - baselineQuotes` and
+        //     never re-seeds, so clearing it there yields NaN and silently
+        //     freezes the target.
+        //   • the +N pop — the typed count jumps because the question changed,
+        //     not because you raced. Dropping prevGainMap costs one suppressed
+        //     render and re-arms after it.
+        if (maxQuotesFilterActive(gd)) delete gd.baselineQuotes;
+        delete prevGainMap[gd.id];
         saveGoals(type);
         renderAllGoals();
         flashSaved();
-        // "All languages" (langs cleared) needs the stat-driven path's totals,
-        // which may not be cached yet (e.g. switching to unranked/all for the
-        // first time) — kick it now instead of waiting for the next poll.
-        if (!(gd.maxQuotesLangs && gd.maxQuotesLangs.length)) updateMaxQuotesGoals();
+        // An unfiltered goal needs the stat-driven path's totals, which may not
+        // be cached yet (e.g. switching to unranked/all for the first time) —
+        // kick it now instead of waiting for the next poll.
+        if (!maxQuotesFilterActive(gd)) updateMaxQuotesGoals();
       }
       function refreshMqLangUI() {
         const chosen = gd.maxQuotesLangs || [];
@@ -1627,7 +1641,9 @@ function gtMain() {
             x.addEventListener("click", (e) => {
               e.stopPropagation();
               gd.maxQuotesLangs = (gd.maxQuotesLangs || []).filter(l => l !== lang);
+              clampMaxQuotesBands(gd, maxQuotesAxis(maxQuotesKindOf(gd), gd.maxQuotesLangs));
               refreshMqLangUI();
+              buildMqSliders();
               mqApply();
             });
             chip.appendChild(label);
@@ -1644,7 +1660,7 @@ function gtMain() {
       let mqRangeTimer = null;
       const scheduleMqApply = () => { clearTimeout(mqRangeTimer); mqRangeTimer = setTimeout(mqApply, 250); };
       const buildMqSliders = () => {
-        const axis = catalogAxis(maxQuotesKindOf(gd), "all");
+        const axis = maxQuotesAxis(maxQuotesKindOf(gd), gd.maxQuotesLangs);
         const clampD = (v) => Math.max(axis.diffMin, Math.min(axis.diffMax, v));
         const clampL = (v) => Math.max(axis.lenMin,  Math.min(axis.lenMax,  v));
         const dLo = gd.diffMin == null ? axis.diffMin : clampD(gd.diffMin);
@@ -1686,7 +1702,11 @@ function gtMain() {
           if (!val) gd.maxQuotesLangs = [];                       // "All languages" → clear the set
           else if (!chosen.includes(val)) gd.maxQuotesLangs = [...chosen, val];
           else return;
+          // The language set moves the difficulty/length axis, so reclamp the
+          // band and rebuild the sliders against it before applying.
+          clampMaxQuotesBands(gd, maxQuotesAxis(maxQuotesKindOf(gd), gd.maxQuotesLangs));
           refreshMqLangUI();
+          buildMqSliders();
           mqApply();
         });
       }
@@ -6646,6 +6666,7 @@ async function getExpRankByUsername(username) {
       x.title = `Remove ${lang}`;
       x.addEventListener("click", () => {
         selectedMaxQuotesLangs = selectedMaxQuotesLangs.filter(l => l !== lang);
+        reclampMaxQuotesCreateBands();
         renderMaxQuotesLangChips();
         populateMaxQuotesLangSelect();
         renderPresets();
@@ -6660,6 +6681,7 @@ async function getExpRankByUsername(username) {
       const val = maxQuotesLangSelect ? maxQuotesLangSelect.value : "";
       if (!val) selectedMaxQuotesLangs = [];               // "All languages" → clear the set
       else if (!selectedMaxQuotesLangs.includes(val)) selectedMaxQuotesLangs = [...selectedMaxQuotesLangs, val];
+      reclampMaxQuotesCreateBands();
       renderMaxQuotesLangChips();
       populateMaxQuotesLangSelect();
       renderPresets();
@@ -6668,13 +6690,26 @@ async function getExpRankByUsername(username) {
 
   // Difficulty/length sliders for the max-quotes Next-quote filter (creation
   // modal). Mirrors buildImpSliders / buildRivalCreateSliders: axis bounds
-  // come from the catalog for the selected kind (reused via catalogAxis,
-  // status="all" played since this filter isn't about played/unplayed), the
+  // come from the catalog for the selected kind AND languages (maxQuotesAxis,
+  // so picking a language spans that language's real range), the
   // set() callback writes the draft vars, and setupTargetRange is idempotent
   // so re-showing the block just re-binds against the current values.
+  // Creation-modal counterpart of the edit popover's reclamp: the draft's band
+  // lives in loose vars rather than on a goal, so round-trip it through an
+  // object. Called whenever the selected languages change.
+  function reclampMaxQuotesCreateBands() {
+    const o = {
+      diffMin: selectedMaxQuotesDiffMin, diffMax: selectedMaxQuotesDiffMax,
+      lenMin:  selectedMaxQuotesLenMin,  lenMax:  selectedMaxQuotesLenMax,
+    };
+    clampMaxQuotesBands(o, maxQuotesAxis(maxQuotesKind || "all", selectedMaxQuotesLangs));
+    selectedMaxQuotesDiffMin = o.diffMin; selectedMaxQuotesDiffMax = o.diffMax;
+    selectedMaxQuotesLenMin  = o.lenMin;  selectedMaxQuotesLenMax  = o.lenMax;
+    buildMaxQuotesCreateSliders();
+  }
   function buildMaxQuotesCreateSliders() {
     if (!maxQuotesFilterBlock || maxQuotesFilterBlock.style.display === "none") return;
-    const axis = catalogAxis(maxQuotesKind || "all", "all");
+    const axis = maxQuotesAxis(maxQuotesKind || "all", selectedMaxQuotesLangs);
     const clampD = (v) => Math.max(axis.diffMin, Math.min(axis.diffMax, v));
     const clampL = (v) => Math.max(axis.lenMin,  Math.min(axis.lenMax,  v));
     const dLo = selectedMaxQuotesDiffMin == null ? axis.diffMin : clampD(selectedMaxQuotesDiffMin);
@@ -8486,7 +8521,10 @@ async function getExpRankByUsername(username) {
                    : kind === "all"      ? "max all"
                    :                       "max ranked";
       const langSuffix = (gd.maxQuotesLangs && gd.maxQuotesLangs.length) ? ` (${gd.maxQuotesLangs.join(", ")})` : "";
-      document.getElementById(`${goalId}-label`).textContent = `${cfg.label} → ${suffix}${langSuffix}`;
+      // The difficulty/length band defines the goal too, so it belongs in the
+      // label — without it two goals differing only by band read identically.
+      document.getElementById(`${goalId}-label`).textContent =
+        `${cfg.label} → ${suffix}${langSuffix}${maxQuotesBandSuffix(gd)}`;
     } else if (goalIsImprovement(gd)) {
       const metricLbl = (gd.improvementMetric === "pp") ? "PP" : "WPM";
       const filterStr = (gd.filter && gd.filter !== "all") ? ` (${gd.filter})` : "";
@@ -9091,6 +9129,68 @@ async function getExpRankByUsername(username) {
   }
   function maxQuotesLangReady() {
     return catalogFullySynced() && rivalBulkDone(loadRivalStore(RIVAL_SELF_NAME));
+  }
+  // Compact "· diff 2–4 · len 100–300" suffix for the card label and the
+  // creation hint. Only names the axes actually constrained; an open end shows
+  // as 0 / ∞ so a one-sided band still reads unambiguously.
+  function maxQuotesBandSuffix(gd) {
+    const parts = [];
+    if (gd.diffMin != null || gd.diffMax != null) {
+      parts.push(`diff ${gd.diffMin != null ? gd.diffMin : "0"}–${gd.diffMax != null ? gd.diffMax : "∞"}`);
+    }
+    if (gd.lenMin != null || gd.lenMax != null) {
+      parts.push(`len ${gd.lenMin != null ? gd.lenMin : "0"}–${gd.lenMax != null ? gd.lenMax : "∞"}`);
+    }
+    return parts.length ? " · " + parts.join(" · ") : "";
+  }
+  // Slider bounds for the max-quotes difficulty/length controls, spanning the
+  // quotes actually in the selected kind + language scope. catalogAxis() only
+  // narrows by ranked/unranked, so picking a language left the sliders spanning
+  // the whole catalog's range — most of it empty for that language.
+  let maxQuotesAxisCache = null;
+  function maxQuotesAxis(kind, langs) {
+    const key = `${catalogEpoch}:${kind}:${(langs || []).slice().sort().join(",")}`;
+    if (maxQuotesAxisCache && maxQuotesAxisCache.key === key) return maxQuotesAxisCache;
+    const scope = {
+      kind, langs: (langs || []).slice().sort(),
+      diffMin: null, diffMax: null, lenMin: null, lenMax: null,
+    };
+    let dLo = Infinity, dHi = -Infinity, lLo = Infinity, lHi = -Infinity;
+    for (const qid in quoteCatalog) {
+      const m = quoteCatalog[qid];
+      if (!maxQuoteInScope(m, scope)) continue;
+      const d = Number(m.d), l = Number(m.l);
+      if (Number.isFinite(d)) { if (d < dLo) dLo = d; if (d > dHi) dHi = d; }
+      if (Number.isFinite(l)) { if (l < lLo) lLo = l; if (l > lHi) lHi = l; }
+    }
+    const floorTo = (v, sp) => Math.floor(v / sp) * sp;
+    const ceilTo  = (v, sp) => Math.ceil(v / sp) * sp;
+    const axis = {
+      key,
+      diffMin: Number.isFinite(dLo) ? Math.floor(dLo) : CATALOG_DIFF_MIN,
+      diffMax: Number.isFinite(dHi) ? Math.ceil(dHi)  : CATALOG_DIFF_MAX,
+      lenMin:  Number.isFinite(lLo) ? floorTo(lLo, CATALOG_LEN_ROUND) : CATALOG_LEN_MIN,
+      lenMax:  Number.isFinite(lHi) ? ceilTo(lHi, CATALOG_LEN_ROUND)  : CATALOG_LEN_MAX,
+    };
+    // A scope with one quote (or none) would otherwise hand the slider an empty
+    // or inverted range.
+    if (axis.diffMax <= axis.diffMin) axis.diffMax = axis.diffMin + 1;
+    if (axis.lenMax  <= axis.lenMin)  axis.lenMax  = axis.lenMin + CATALOG_LEN_ROUND;
+    maxQuotesAxisCache = axis;
+    return axis;
+  }
+  // Clamp a goal's (or a creation draft's) difficulty/length band into `axis`,
+  // in place. An end that now spans the whole axis becomes null — null is how
+  // both the sliders and maxQuoteInScope read "unconstrained". Changing kind or
+  // language MOVES the axis, and a band left outside the new one silently
+  // matches nothing, so every scope change reclamps before it takes effect.
+  function clampMaxQuotesBands(o, axis) {
+    const lo = (v, mn, mx) => { if (v == null) return null; const c = Math.max(mn, Math.min(mx, v)); return c <= mn ? null : c; };
+    const hi = (v, mn, mx) => { if (v == null) return null; const c = Math.max(mn, Math.min(mx, v)); return c >= mx ? null : c; };
+    o.diffMin = lo(o.diffMin, axis.diffMin, axis.diffMax);
+    o.diffMax = hi(o.diffMax, axis.diffMin, axis.diffMax);
+    o.lenMin  = lo(o.lenMin,  axis.lenMin,  axis.lenMax);
+    o.lenMax  = hi(o.lenMax,  axis.lenMin,  axis.lenMax);
   }
   // Epoch-memoized: read on every render tick (the card's numbers AND the
   // Next-button state), not just on click. The resolved `scope` is kept on the
