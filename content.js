@@ -912,7 +912,6 @@ function gtMain() {
         <span id="${goalId}-avg-progress" class="gt-avg-progress">0 / 0</span>
       </div>
       <div id="${goalId}-countdown" class="gt-countdown" style="display:none;"></div>
-      ${(curGoal && curGoal.maxQuotes) ? `<div id="${goalId}-maxquotes-filter-line" class="gt-maxquotes-filter-line" style="display:none;"></div>` : ""}
       ${(curGoal && curGoal.maxQuotes) ? `<button id="${goalId}-maxquotes-next" class="gt-rival-next-btn" disabled>⏭ Next quote</button>` : ""}
     `;
 
@@ -1249,7 +1248,7 @@ function gtMain() {
     // ── Max-quotes editor (kind + language filter) ──────────────────
     // Editing either just updates the goal's fields and re-renders — the
     // baseline/target bookkeeping is purely internal and self-corrects on the
-    // next render (updateMaxQuotesLangGoalSection / updateMaxQuotesGoals both
+    // next render (updateMaxQuotesFilteredGoalSection / updateMaxQuotesGoals both
     // recompute target from live data every tick; baseline cancels out of
     // what's displayed either way), so there's no migration step needed here.
     // Select options + chips are populated via DOM after pop.innerHTML is set
@@ -1579,7 +1578,7 @@ function gtMain() {
     // Max-quotes controls: kind buttons + language chip picker, both writing
     // straight through to gd and re-rendering (same apply-in-place pattern as
     // the improvement-target / rival editors above). No re-fetch is needed —
-    // updateMaxQuotesLangGoalSection / updateMaxQuotesGoals both recompute
+    // updateMaxQuotesFilteredGoalSection / updateMaxQuotesGoals both recompute
     // target from already-cached data (catalog+self-store, or the stats poll)
     // on the very next render.
     if (isMaxQuotesGoal) {
@@ -1637,8 +1636,8 @@ function gtMain() {
           }
         }
       }
-      // Difficulty/length filter — Next-quote pool only (never the goal's
-      // main progress, see computeMaxQuotesNextInfo). Debounced apply since
+      // Difficulty/length filter — narrows the goal itself, same as the
+      // language set (see maxQuoteInScope). Debounced apply since
       // the sliders fire continuously on drag; changing either takes effect
       // immediately off the already-cached catalog, no resync/refetch — same
       // reasoning as the language/kind controls above.
@@ -4892,9 +4891,9 @@ async function getExpRankByUsername(username) {
   // goal is actually present.
   function quotesNeedUnrankedData() {
     const goals = goalData?.quotes || [];
-    // Language-filtered goals never read this stat (they tally the catalog
-    // instead), so they don't count toward needing it.
-    return goals.some(g => g.maxQuotes && !(g.maxQuotesLangs && g.maxQuotesLangs.length)
+    // Filtered goals never read this stat (they tally the catalog instead), so
+    // they don't count toward needing it.
+    return goals.some(g => g.maxQuotes && !maxQuotesFilterActive(g)
       && (g.maxQuotesKind === 'unranked' || g.maxQuotesKind === 'all'));
   }
 
@@ -5621,10 +5620,10 @@ async function getExpRankByUsername(username) {
   // via the goal's edit popover). Empty = "All languages". Chip-based like the
   // rival goal's multi-rival list.
   let selectedMaxQuotesLangs = [];
-  // Difficulty/length filter for the max-quotes "Next quote" pool (also
-  // editable later via the edit popover). null = open end, same convention as
-  // Improvement-Target/Rival goals. Doesn't affect the goal's main progress —
-  // see maxQuotesFilterActive / computeMaxQuotesNextInfo.
+  // Difficulty/length filter for max-quotes goals (also editable later via the
+  // edit popover). null = open end, same convention as Improvement-Target/Rival
+  // goals. Narrows the goal's own progress, not just the Next-quote pool —
+  // see maxQuotesFilterActive / maxQuoteInScope.
   let selectedMaxQuotesDiffMin = null, selectedMaxQuotesDiffMax = null;
   let selectedMaxQuotesLenMin  = null, selectedMaxQuotesLenMax  = null;
   let maxCharsMode = false; // "max" toggle for chars (distinct-quote chars; any kind active)
@@ -5754,7 +5753,7 @@ async function getExpRankByUsername(username) {
   // over the catalog instead of the site-wide quotesTyped stat, and EVERY
   // max-quotes goal's "Next quote" button needs the self store to know which
   // quotes are already done. Same gating need as max-chars goals above.
-  function haveMaxQuotesLangGoals() {
+  function haveMaxQuotesGoals() {
     return (goalData.quotes || []).some(g => g && g.maxQuotes);
   }
 
@@ -6289,7 +6288,13 @@ async function getExpRankByUsername(username) {
         // ── Language filter chosen — preview from the catalog tally, not
         // the site-wide API total (quotesTyped/getTypeGGTotalQuotes aren't
         // language-scoped, so they can't answer "how many French quotes").
-        const pv = previewMaxQuotesLang(maxQuotesKind, selectedMaxQuotesLangs);
+        // Pass the difficulty/length sliders too — they narrow the goal itself
+        // now, so a preview blind to them would promise a bigger target than
+        // the goal will actually have.
+        const pv = previewMaxQuotesLang(maxQuotesKind, selectedMaxQuotesLangs, {
+          diffMin: selectedMaxQuotesDiffMin, diffMax: selectedMaxQuotesDiffMax,
+          lenMin:  selectedMaxQuotesLenMin,  lenMax:  selectedMaxQuotesLenMax,
+        });
         const langLabel = selectedMaxQuotesLangs.join(", ");
         modeHint.style.display = "block";
         if (!pv.ready) {
@@ -7858,10 +7863,10 @@ async function getExpRankByUsername(username) {
       gainTarget = selectedValue;
     } else if (selectedMode === "target" && cfg.supportsTarget) {
         if (selectedType === "quotes" && maxQuotesMode && maxQuotesKind && selectedMaxQuotesLangs.length) {
-          // ── Max quotes mode, filtered to specific language(s) ──
+          // ── Max quotes mode, narrowed by language/difficulty/length ──
           // Same shape as max-chars below: a computed catalog goal (no
           // cumulative target here at creation). baselineQuotes/target lock
-          // lazily on the first ready render (updateMaxQuotesLangGoalSection)
+          // lazily on the first ready render (updateMaxQuotesFilteredGoalSection)
           // once the catalog + self store are synced, so creation isn't
           // blocked on either — quotesTyped/getTypeGGTotalQuotes aren't
           // language-scoped, so they can't seed this baseline anyway.
@@ -8005,9 +8010,9 @@ async function getExpRankByUsername(username) {
         maxQuotes: isMaxQuotes || undefined,
         maxQuotesKind: maxQuotesKindForGoal || undefined,
         maxQuotesLangs: (maxQuotesLangsForGoal && maxQuotesLangsForGoal.length) ? maxQuotesLangsForGoal : undefined,
-        // Difficulty/length filter for the Next-quote pool only (never the
-        // main progress count — see computeMaxQuotesNextInfo). Same field
-        // names/null-is-open-end convention as Improvement-Target/Rival goals.
+        // Difficulty/length filter. Narrows the goal itself, exactly like the
+        // language set does — same field names / null-is-open-end convention as
+        // Improvement-Target/Rival goals. See maxQuoteInScope.
         diffMin: isMaxQuotes ? selectedMaxQuotesDiffMin : undefined,
         diffMax: isMaxQuotes ? selectedMaxQuotesDiffMax : undefined,
         lenMin:  isMaxQuotes ? selectedMaxQuotesLenMin  : undefined,
@@ -8019,11 +8024,17 @@ async function getExpRankByUsername(username) {
         quoteCharsAbsoluteTarget: quoteCharsAbsoluteTarget != null ? quoteCharsAbsoluteTarget : undefined,
         filter: (selectedType === "races" || selectedType === "improvement") ? selectedFilter : undefined,
         targetLoaded: selectedMode === "rank" ? false : true, // false for rank goals — target is loaded async by updateRankGoals/updateExpRankGoals
-        // Language-filtered max-quotes goals leave baselineQuotes unset —
-        // updateMaxQuotesLangGoalSection locks it lazily off the catalog tally
-        // on the first ready render, since currentVal (quotesTyped) isn't
-        // language-scoped and would seed the wrong baseline here.
-        [cfg.baselineKey]: (maxQuotesLangsForGoal && maxQuotesLangsForGoal.length) ? undefined
+        // A max-quotes goal with ANY scope filter leaves baselineQuotes unset —
+        // updateMaxQuotesFilteredGoalSection locks it lazily off the catalog
+        // tally on the first ready render. currentVal (quotesTyped) is blind to
+        // language, difficulty and length, so it would seed the wrong baseline
+        // here; that applies to a difficulty/length-only filter just as much as
+        // to a language one.
+        [cfg.baselineKey]: (isMaxQuotes && (
+            (maxQuotesLangsForGoal && maxQuotesLangsForGoal.length)
+            || selectedMaxQuotesDiffMin != null || selectedMaxQuotesDiffMax != null
+            || selectedMaxQuotesLenMin  != null || selectedMaxQuotesLenMax  != null
+          )) ? undefined
           : (maxQuotesBaselineOverride != null ? maxQuotesBaselineOverride : currentVal),
         recurrence: selectedRec,
         supportsRecurrence: (selectedMode === "gain" || selectedMode === "average" || selectedMode === "improvement"),
@@ -8567,36 +8578,22 @@ async function getExpRankByUsername(username) {
       indicator.addEventListener("animationend", () => indicator.remove());
     }
 
-    // ── "Next quote" button + filtered-count line (max-quotes goals only) ──
-    // The difficulty/length filter narrows ONLY these two — the goal's own
-    // X/Y above always reflects kind+language alone, per computeMaxQuotesNextInfo.
+    // ── "Next quote" button (max-quotes goals only) ──────────────────────
+    // Draws from the same scope the goal's X/Y counts, so the button runs out
+    // exactly when the goal completes.
     const maxQuotesNextBtn = document.getElementById(`${goalId}-maxquotes-next`);
-    const maxQuotesFilterLine = document.getElementById(`${goalId}-maxquotes-filter-line`);
     if (maxQuotesNextBtn) {
       if (!maxQuotesLangReady()) {
         maxQuotesNextBtn.textContent = "⏭ Finding quotes…";
         maxQuotesNextBtn.disabled = true;
-        if (maxQuotesFilterLine) maxQuotesFilterLine.style.display = "none";
       } else {
-        const { pool, total } = computeMaxQuotesNextInfo(gd);
+        const { pool } = computeMaxQuotesTally(gd);
         if (pool.length > 0) {
           maxQuotesNextBtn.textContent = "⏭ Next quote";
           maxQuotesNextBtn.disabled = false;
         } else {
           maxQuotesNextBtn.textContent = "✓ All quotes done 🥇";
           maxQuotesNextBtn.disabled = true;
-        }
-        if (maxQuotesFilterLine) {
-          if (maxQuotesFilterActive(gd)) {
-            // Follows the same Progress/Remaining display-format toggle as
-            // the goal's main gain text (remainingView, computed above).
-            maxQuotesFilterLine.textContent = remainingView
-              ? `Filtered: ${pool.length.toLocaleString()} to go`
-              : `Filtered: ${(total - pool.length).toLocaleString()} / ${total.toLocaleString()}`;
-            maxQuotesFilterLine.style.display = "block";
-          } else {
-            maxQuotesFilterLine.style.display = "none";
-          }
         }
       }
     }
@@ -9026,100 +9023,109 @@ async function getExpRankByUsername(username) {
     updateGoalSection(goalId, type, cfg, gd, gain, isRecurring, gainDelta);
   }
 
-  // ── Max-quotes goals with a language filter ───────────────────────
-  // Same shape as max-chars above (tally over the catalog + self store
-  // instead of the site-wide quotesTyped stat), because quotesTyped isn't
-  // language-scoped and /v1/quotes' `language` query param is silently
-  // ignored server-side (verified). Only used when gd.maxQuotesLangs is
-  // non-empty; goals left on "All languages" keep the cheap stat-driven path
-  // in updateMaxQuotesGoals.
-  function tallyMaxQuotesLang(kind, langs) {
+  // ── Max-quotes goals with a scope filter (language / difficulty / length) ──
+  // Same shape as max-chars above (tally over the catalog + self store instead
+  // of the site-wide quotesTyped stat), because quotesTyped is blind to all
+  // three axes and /v1/quotes' `language` query param is silently ignored
+  // server-side (verified). A goal with NO filter at all keeps the cheap
+  // stat-driven path in updateMaxQuotesGoals — that answers instantly instead
+  // of waiting on the ~21k-quote catalog build.
+  //
+  // The filter narrows the GOAL, not just the Next-quote button: "200 English
+  // quotes, 300-500 chars" targets exactly those. It used to narrow only the
+  // Next pool, with the filtered count on a line of its own, which made the
+  // controls mean two different things at once; that line went with the split.
+  function maxQuotesScopeOf(gd) {
+    return {
+      kind:    maxQuotesKindOf(gd),
+      langs:   (gd.maxQuotesLangs || []).slice().sort(),
+      diffMin: gd.diffMin ?? null, diffMax: gd.diffMax ?? null,
+      lenMin:  gd.lenMin  ?? null, lenMax:  gd.lenMax  ?? null,
+    };
+  }
+  function maxQuotesScopeSig(scope) {
+    return [scope.kind, scope.langs.join(","), scope.diffMin, scope.diffMax,
+            scope.lenMin, scope.lenMax].join("|");
+  }
+  // Does this goal constrain the quote set at all? An unconstrained one is
+  // exactly the site-wide quotesTyped stat, so it never needs the catalog.
+  function maxQuotesFilterActive(gd) {
+    const s = maxQuotesScopeOf(gd);
+    return s.langs.length > 0 || s.diffMin != null || s.diffMax != null
+        || s.lenMin != null || s.lenMax != null;
+  }
+  // The ONE membership predicate, shared by the tally, the Next-quote pool and
+  // the incremental cache patcher, so the three can't disagree about scope.
+  function maxQuoteInScope(m, scope) {
+    if (!m) return false;
+    if (!maxCharsScopeOk(m.r, scope.kind)) return false; // ranked/unranked/all
+    if (scope.langs.length && !scope.langs.includes(m.lang)) return false;
+    if (scope.diffMin != null || scope.diffMax != null) {
+      const d = Number(m.d);
+      if (!Number.isFinite(d)) return false;
+      if (scope.diffMin != null && d < scope.diffMin) return false;
+      if (scope.diffMax != null && d > scope.diffMax) return false;
+    }
+    if (scope.lenMin != null || scope.lenMax != null) {
+      const l = Number(m.l);
+      if (!Number.isFinite(l)) return false;
+      if (scope.lenMin != null && l < scope.lenMin) return false;
+      if (scope.lenMax != null && l > scope.lenMax) return false;
+    }
+    return true;
+  }
+  // ONE walk of the catalog answers all three things the card needs: the
+  // progress numerator, its denominator, and the untyped pool Next draws from.
+  // Tallying and pooling separately walked 21k quotes twice per render tick.
+  function tallyMaxQuotes(scope) {
     const sq = loadRivalStore(RIVAL_SELF_NAME).quotes;
+    const pool = [];
     let total = 0, typed = 0;
     for (const qid in quoteCatalog) {
-      const m = quoteCatalog[qid];
-      if (!maxCharsScopeOk(m.r, kind)) continue; // same ranked/unranked/all semantics
-      if (langs.length && !langs.includes(m.lang)) continue;
+      if (!maxQuoteInScope(quoteCatalog[qid], scope)) continue;
       total++;
-      if (sq[qid]) typed++;
+      if (qid in sq) typed++;
+      else pool.push(qid);
     }
-    return { typed, total };
+    return { typed, total, pool };
   }
   function maxQuotesLangReady() {
     return catalogFullySynced() && rivalBulkDone(loadRivalStore(RIVAL_SELF_NAME));
   }
-  // Not-yet-typed candidate pool for a max-quotes goal's "Next quote" button —
-  // kind + language + the optional difficulty/length filter (gd.diffMin/
-  // diffMax/lenMin/lenMax, same fields and null-is-open-end convention as
-  // Improvement-Target/Rival goals — checked via the existing
-  // targetQuotePassesMeta, reused as-is). This filter narrows ONLY the Next-
-  // button's pool, never the goal's main X/Y progress (computeMaxQuotesLang /
-  // the stat-driven path deliberately don't look at it) — the user asked for
-  // the two to stay independent, with the filtered count shown as its own
-  // line (maxQuotesFilterActive / the -maxquotes-filter-line element).
-  // `total` here is every filter-matching quote regardless of typed state
-  // (for that line); `pool` is the untyped subset (what Next draws from).
-  // Epoch-memoized like computeMaxChars/computeMaxQuotesLang: this is read on
-  // every render tick (button/line state), not just on click.
-  const maxQuotesNextPoolCache = new Map(); // goalId -> { catEpoch, selfEpoch, kind, langsSig, filterSig, pool, total }
-  function maxQuotesFilterSig(gd) {
-    return `${gd.diffMin},${gd.diffMax},${gd.lenMin},${gd.lenMax}`;
-  }
-  function maxQuotesFilterActive(gd) {
-    return gd.diffMin != null || gd.diffMax != null || gd.lenMin != null || gd.lenMax != null;
-  }
-  function computeMaxQuotesNextInfo(gd) {
-    const kind = maxQuotesKindOf(gd);
-    const langs = gd.maxQuotesLangs || [];
-    const langsSig = langs.slice().sort().join(",");
-    const filterSig = maxQuotesFilterSig(gd);
+  // Epoch-memoized: read on every render tick (the card's numbers AND the
+  // Next-button state), not just on click. The resolved `scope` is kept on the
+  // entry so the incremental patcher can re-test a single quote against it
+  // without reconstructing it from the signature.
+  const maxQuotesTallyCache = new Map(); // goalId -> { catEpoch, selfEpoch, sig, scope, typed, total, pool }
+  function computeMaxQuotesTally(gd) {
+    const scope = maxQuotesScopeOf(gd), sig = maxQuotesScopeSig(scope);
     const catEpoch = catalogEpoch, selfEpoch = rivalStoreEpoch;
-    const c = maxQuotesNextPoolCache.get(gd.id);
-    if (c && c.catEpoch === catEpoch && c.selfEpoch === selfEpoch && c.kind === kind
-        && c.langsSig === langsSig && c.filterSig === filterSig) return c;
-    const sq = loadRivalStore(RIVAL_SELF_NAME).quotes;
-    const pool = [];
-    let total = 0;
-    for (const qid in quoteCatalog) {
-      const m = quoteCatalog[qid];
-      if (!maxCharsScopeOk(m.r, kind)) continue;
-      if (langs.length && !langs.includes(m.lang)) continue;
-      if (!targetQuotePassesMeta(m, gd)) continue; // gd.status is unset for max-quotes goals, so only diff/len apply
-      total++;
-      if (sq[qid]) continue; // already typed
-      pool.push(qid);
-    }
-    const res = { catEpoch, selfEpoch, kind, langsSig, filterSig, pool, total };
-    maxQuotesNextPoolCache.set(gd.id, res);
+    const c = maxQuotesTallyCache.get(gd.id);
+    if (c && c.catEpoch === catEpoch && c.selfEpoch === selfEpoch && c.sig === sig) return c;
+    const res = { catEpoch, selfEpoch, sig, scope, ...tallyMaxQuotes(scope) };
+    maxQuotesTallyCache.set(gd.id, res);
     return res;
   }
-  function maxQuotesNextPool(gd) { return computeMaxQuotesNextInfo(gd).pool; }
-  // Creation-modal preview, mirroring previewMaxChars.
-  function previewMaxQuotesLang(kind, langs) {
-    const { typed, total } = tallyMaxQuotesLang(kind, langs);
+  function maxQuotesNextPool(gd) { return computeMaxQuotesTally(gd).pool; }
+  // Creation-modal preview, mirroring previewMaxChars. `bounds` carries the
+  // draft's difficulty/length sliders when the modal has them.
+  function previewMaxQuotesLang(kind, langs, bounds) {
+    const b = bounds || {};
+    const { typed, total } = tallyMaxQuotes({
+      kind, langs: (langs || []).slice().sort(),
+      diffMin: b.diffMin ?? null, diffMax: b.diffMax ?? null,
+      lenMin:  b.lenMin  ?? null, lenMax:  b.lenMax  ?? null,
+    });
     return { typed, total, ready: maxQuotesLangReady() };
   }
-  const maxQuotesLangCache = new Map(); // goalId -> { catEpoch, selfEpoch, kind, langsSig, typed, total }
-  function computeMaxQuotesLang(gd) {
-    const kind = maxQuotesKindOf(gd);
-    const langs = gd.maxQuotesLangs || [];
-    const langsSig = langs.slice().sort().join(",");
-    const catEpoch = catalogEpoch, selfEpoch = rivalStoreEpoch;
-    const c = maxQuotesLangCache.get(gd.id);
-    if (c && c.catEpoch === catEpoch && c.selfEpoch === selfEpoch && c.kind === kind && c.langsSig === langsSig) return c;
-    const { typed, total } = tallyMaxQuotesLang(kind, langs);
-    const res = { catEpoch, selfEpoch, kind, langsSig, typed, total };
-    maxQuotesLangCache.set(gd.id, res);
-    return res;
-  }
-  // Render a max-quotes goal that has a language filter set. Mirrors
+  // Render a max-quotes goal that has any scope filter set. Mirrors
   // updateQuoteCharsGoalSection above: shows "Syncing… (N%)" until the
   // catalog + self store are ready, locks gd.baselineQuotes once, keeps
-  // gd.target current as the site's quote count for this kind+language set
-  // grows (new quotes get added over time — same idea as updateMaxQuotesGoals'
-  // stat-driven target refresh), then delegates to the shared updateGoalSection
-  // exactly like the stat-driven path does, so the card renders identically.
-  function updateMaxQuotesLangGoalSection(goalId, type, cfg, gd, isRecurring) {
+  // gd.target current as the site's quote count for this scope grows (new
+  // quotes get added over time — same idea as updateMaxQuotesGoals' stat-driven
+  // target refresh), then delegates to the shared updateGoalSection exactly like
+  // the stat-driven path does, so the card renders identically.
+  function updateMaxQuotesFilteredGoalSection(goalId, type, cfg, gd, isRecurring) {
     const gainTextEl = document.getElementById(`${goalId}-gain-text`);
     const fillEl     = document.getElementById(`${goalId}-progress-fill`);
     if (!maxQuotesLangReady()) {
@@ -9130,7 +9136,7 @@ async function getExpRankByUsername(username) {
       if (fillEl) { fillEl.style.width = `${syncPct == null ? 0 : syncPct}%`; fillEl.style.background = "#60a5fa"; }
       return;
     }
-    const { typed, total } = computeMaxQuotesLang(gd);
+    const { typed, total } = computeMaxQuotesTally(gd);
     const goals = goalData[type];
     const live  = goals && goals.find(g => g.id === goalId);
     if (live) {
@@ -9447,11 +9453,12 @@ async function getExpRankByUsername(username) {
           updateQuoteCharsGoalSection(goalId, type, cfg, gd, isRecurring);
           continue;
         }
-        // Max-quotes with a language filter: quotesTyped isn't language-scoped,
-        // so this bypasses the stat-driven path below (same reasoning as the
-        // max-chars/quote-chars catalog-driven branches above it).
-        if (type === "quotes" && gd.maxQuotes && gd.maxQuotesLangs && gd.maxQuotesLangs.length) {
-          updateMaxQuotesLangGoalSection(goalId, type, cfg, gd, isRecurring);
+        // Max-quotes with any scope filter: quotesTyped is blind to language,
+        // difficulty and length, so this bypasses the stat-driven path below
+        // (same reasoning as the max-chars/quote-chars catalog-driven branches
+        // above it). Unfiltered goals still take the cheap stat path.
+        if (type === "quotes" && gd.maxQuotes && maxQuotesFilterActive(gd)) {
+          updateMaxQuotesFilteredGoalSection(goalId, type, cfg, gd, isRecurring);
           continue;
         }
 
@@ -9879,7 +9886,7 @@ async function getExpRankByUsername(username) {
       // DON'T render — selfRender=false merges the store quietly. We collect the
       // promise so flushGoalRender() can wait briefly and show merged bests in
       // the single reveal. (gtPerf still logs the rival fetch lag internally.)
-      if (racesChanged && ((goalData.rival || []).length > 0 || haveImprovementTargetGoals() || haveMaxCharsGoals() || haveMaxQuotesLangGoals())) {
+      if (racesChanged && ((goalData.rival || []).length > 0 || haveImprovementTargetGoals() || haveMaxCharsGoals() || haveMaxQuotesGoals())) {
         const gtPerfSession = gtPerf.startRivalLag(gtStatsFetchMs); // [GT-PERF] anchor: rival fetch kicked
         const maintainPromise = maintainSelfStoreFromRaces(gtPerfSession, false)
           .catch(e => { console.warn("[Goal Tracker] rival self-store maintenance failed:", e); return false; });
@@ -11626,7 +11633,7 @@ async function getExpRankByUsername(username) {
     if (!isLeader || !rivalIdbReady) return;
     if (apiHardThrottled()) return; // a genuine rate-limit is still in effect
     const haveRival = (goalData.rival || []).length > 0;
-    if (!haveRival && !haveImprovementTargetGoals() && !haveMaxCharsGoals() && !haveMaxQuotesLangGoals()) return;
+    if (!haveRival && !haveImprovementTargetGoals() && !haveMaxCharsGoals() && !haveMaxQuotesGoals()) return;
     // Pull your latest /races into the self store (fills the just-set PB the
     // gated finish missed), then fill the live quote's bests for each rival.
     maintainSelfStoreFromRaces().catch(() => {});
@@ -12783,22 +12790,17 @@ async function getExpRankByUsername(username) {
     }
   }
 
-  function patchMaxQuotesLangCacheForQuote(qid, prevEntry, newEntry) {
+  function patchMaxQuotesTallyCacheForQuote(qid, prevEntry, newEntry) {
     if (prevEntry) return; // same presence-only shape as max-chars
     const m = quoteCatalog[qid];
     if (!m) return;
-    const langMatches = (langsSig) => !langsSig || langsSig.split(",").includes(m.lang);
-    for (const c of maxQuotesLangCache.values()) {
+    // One cache now carries the count AND the Next pool, and the entry keeps its
+    // resolved scope, so the same predicate the tally used decides membership
+    // here — no re-parsing a signature back into a filter.
+    for (const c of maxQuotesTallyCache.values()) {
       if (c.catEpoch !== catalogEpoch) continue;
-      if (!maxCharsScopeOk(m.r, c.kind)) continue;
-      if (!langMatches(c.langsSig)) continue;
+      if (!maxQuoteInScope(m, c.scope)) continue;
       c.typed += 1;
-      c.selfEpoch = rivalStoreEpoch;
-    }
-    for (const c of maxQuotesNextPoolCache.values()) {
-      if (c.catEpoch !== catalogEpoch) continue;
-      if (!maxCharsScopeOk(m.r, c.kind)) continue;
-      if (!langMatches(c.langsSig)) continue;
       const idx = c.pool.indexOf(qid);
       if (idx !== -1) c.pool.splice(idx, 1); // no longer a "next quote" candidate
       c.selfEpoch = rivalStoreEpoch;
@@ -12810,7 +12812,7 @@ async function getExpRankByUsername(username) {
     patchRivalStandingsForQuote(qid, prevEntry, newEntry);
     patchTargetCacheForQuote(qid, prevEntry, newEntry);
     patchMaxCharsCacheForQuote(qid, prevEntry, newEntry);
-    patchMaxQuotesLangCacheForQuote(qid, prevEntry, newEntry);
+    patchMaxQuotesTallyCacheForQuote(qid, prevEntry, newEntry);
   }
 
   function computeRivalStandings(gd) {
@@ -14765,10 +14767,10 @@ async function getExpRankByUsername(username) {
       if (!goals || goals.length === 0) return;
 
       // ── Skip entirely if no goal actually uses maxQuotes ─────
-      // Language-filtered goals (gd.maxQuotesLangs) don't use this site-wide
-      // stat path at all — updateMaxQuotesLangGoalSection owns their target
-      // via the catalog tally instead, so they're excluded here.
-      const isStatDriven = g => g.maxQuotes && !(g.maxQuotesLangs && g.maxQuotesLangs.length);
+      // Filtered goals don't use this site-wide stat path at all —
+      // updateMaxQuotesFilteredGoalSection owns their target via the catalog
+      // tally instead, so they're excluded here.
+      const isStatDriven = g => g.maxQuotes && !maxQuotesFilterActive(g);
       if (!goals.some(isStatDriven)) return;
 
       // Work out which on-site totals we actually need, then fetch each
