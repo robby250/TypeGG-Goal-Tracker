@@ -1617,7 +1617,7 @@ function gtMain() {
           const allOpt = document.createElement("option");
           allOpt.value = ""; allOpt.textContent = "All languages";
           mqSelect.appendChild(allOpt);
-          for (const lang of maxQuotesLangOptions()) {
+          for (const lang of maxQuotesLangOptions(maxQuotesKindOf(gd))) {
             if (chosen.includes(lang)) continue;
             const opt = document.createElement("option");
             opt.value = lang; opt.textContent = lang;
@@ -1688,6 +1688,9 @@ function gtMain() {
           // Kind moves the catalog axis — reset the filter handles to full
           // range and rebuild, same as Improvement-Target's onImpPoolChange.
           gd.diffMin = gd.diffMax = gd.lenMin = gd.lenMax = null;
+          // Kind also moves which languages are offered (ranked/unranked
+          // language sets differ) — refresh the dropdown, not just the axis.
+          refreshMqLangUI();
           buildMqSliders();
           mqApply();
         });
@@ -6627,9 +6630,14 @@ async function getExpRankByUsername(username) {
   // populates as the catalog builds). Not hardcoded to the site's mirror
   // languages (fr/it/ru/es/vi/de): the catalog has already surfaced values
   // outside that list (e.g. "Portuguese").
-  function maxQuotesLangOptions() {
-    const set = new Set(["English"]);
-    for (const qid in quoteCatalog) { const l = quoteCatalog[qid].lang; if (l) set.add(l); }
+  function maxQuotesLangOptions(kind) {
+    const set = new Set(kind === "ranked" || kind === "unranked" ? [] : ["English"]);
+    for (const qid in quoteCatalog) {
+      const m = quoteCatalog[qid];
+      if (!m.lang) continue;
+      if (!maxCharsScopeOk(m.r, kind || "all")) continue;
+      set.add(m.lang);
+    }
     return [...set].sort();
   }
   function populateMaxQuotesLangSelect() {
@@ -6640,7 +6648,7 @@ async function getExpRankByUsername(username) {
     const allOpt = document.createElement("option");
     allOpt.value = ""; allOpt.textContent = "All languages";
     maxQuotesLangSelect.appendChild(allOpt);
-    for (const lang of maxQuotesLangOptions()) {
+    for (const lang of maxQuotesLangOptions(maxQuotesKind)) {
       if (chosen.has(lang)) continue; // already added as a chip — don't offer it twice
       const opt = document.createElement("option");
       opt.value = lang; opt.textContent = lang;
