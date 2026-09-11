@@ -536,10 +536,13 @@ function gtMain() {
   // positioned anywhere on-screen), stack goals by dropping them onto
   // existing widgets, or reorder goals within a widget by dragging.
   //
-  // Shape: { [groupId]: { position: {xA,xOff,yA,yOff}|null, size: {width}|null, goalIds: [...] } }
+  // Shape: { [groupId]: { position: {xA,xOff,yA,yOff,h}|null, size: {width}|null, goalIds: [...] } }
   //   - position: per-axis edge anchors — nearest edge ('l'/'r'/'t'/'b') or centre ('c') plus a
   //     CSS-px offset from it — so a widget keeps its spot relative to the window on resize/zoom.
-  //     null for main = CSS default (top-right). Detached widgets always have a position.
+  //     h is the rendered height the anchors were taken at, which is what lets the exact top be
+  //     rebuilt while the widget is still empty at startup (see gtAnchorsFromRect). Absent on
+  //     positions written by older builds. null for main = CSS default (top-right). Detached
+  //     widgets always have a position.
   //     Legacy {xRatio,yRatio} fraction and {left,top}px formats migrate on first use.
   //   - size: { width: "220px", scale: 1.4, minH: "310px" } — width is the LAYOUT width
   //     (pre-scale CSS px, what text wraps against); scale is a uniform content zoom applied
@@ -1870,9 +1873,6 @@ function gtMain() {
   // huge goal card at a low page zoom); the viewport clamp in
   // applyWidgetPosition keeps even an oversized widget reachable on-screen.
   const GT_MIN_SCALE = 0.6, GT_MAX_SCALE = Infinity;
-  // How long a widget's height must stay unchanged before its position is
-  // considered "settled" and locked to top-left (see observeWidgetResize).
-  const GT_SETTLE_MS = 1500;
   function gtWidgetScale(widgetEl) {
     const s = parseFloat(widgetEl.dataset.gtScale);
     return Number.isFinite(s) && s > 0 ? s : 1;
@@ -1922,6 +1922,13 @@ function gtMain() {
   //       viewport centre than the widget is to either edge (the middle third,
   //       roughly) — a dead-centred widget therefore stays dead-centred.
   //   yA: 't' | 'b' | 'c' + yOff — same idea vertically.
+  //   h:  the RENDERED HEIGHT the anchors were measured at. 'b' and 'c'
+  //       express the top as vh − h − yOff / (vh − h)/2 + yOff, so without h
+  //       the stored top is only recoverable at the height it was captured —
+  //       and a restored widget is EMPTY until its goals stream in. Keeping h
+  //       makes the round-trip lossless in `top` for every anchor kind (see
+  //       applyWidgetPosition), while yA/yOff keep their edge-hugging meaning
+  //       for zoom and window resize.
   function gtAnchorsFromRect(left, top, w, h, vw, vh) {
     const dL = left, dR = vw - (left + w), dCx = (left + w / 2) - vw / 2;
     const dT = top,  dB = vh - (top + h), dCy = (top + h / 2) - vh / 2;
@@ -1932,7 +1939,14 @@ function gtMain() {
     if (Math.abs(dCy) <= Math.min(dT, dB)) { yA = "c"; yOff = Math.round(dCy); }
     else if (dT <= dB)                     { yA = "t"; yOff = Math.round(Math.max(0, dT)); }
     else                                   { yA = "b"; yOff = Math.round(Math.max(0, dB)); }
-    return { xA, xOff, yA, yOff };
+    return { xA, xOff, yA, yOff, h: Math.round(h) };
+  }
+  // The usable stored height of a position, or 0 when there isn't one:
+  // absent (saved by an older build) or zero, which is what a widget reports
+  // while display:none — see the gtVisibilityFromPopup comment at the top of
+  // the file for why that reading must never be trusted as geometry.
+  function gtStoredHeight(pos) {
+    return pos && Number.isFinite(pos.h) && pos.h > 0 ? pos.h : 0;
   }
   // A widget's CURRENT on-screen rect → anchors. Only called when the rect is
   // authoritative — the user just dropped the widget there, or a freshly
@@ -1976,16 +1990,33 @@ function gtMain() {
     const { w: vw, h: vh } = gtViewport();
     // Rendered (post-scale) size — that's what actually occupies the screen.
     const { w: ww, h: wh } = gtRenderedSize(widgetEl);
+    // Vertical projection uses the height the anchors were MEASURED at, not
+    // the live one. At restore the widget is still empty — goals stream in
+    // over ~24s (startLeaderIntervals) — so projecting a 'b'/'c' anchor
+    // against the live height put the top hundreds of px too low, and the
+    // widget then grew downward from there. With the stored height the top
+    // comes out exactly where it was, immediately, and the arriving sections
+    // simply extend it downward. Placed widgets keep h in sync with their
+    // real height (refreshGroupAnchors), so zoom/resize behaviour is
+    // unchanged. Legacy positions have no h and fall back to the live value.
+    const hRef = gtStoredHeight(pos) || wh;
     let left, top;
     if      (pos.xA === "r") left = vw - ww - pos.xOff;
     else if (pos.xA === "c") left = (vw - ww) / 2 + pos.xOff;
     else                     left = pos.xOff;
-    if      (pos.yA === "b") top = vh - wh - pos.yOff;
-    else if (pos.yA === "c") top = (vh - wh) / 2 + pos.yOff;
+    if      (pos.yA === "b") top = vh - hRef - pos.yOff;
+    else if (pos.yA === "c") top = (vh - hRef) / 2 + pos.yOff;
     else                     top = pos.yOff;
+    // Clamp against the REMEMBERED footprint, not just the current one, so a
+    // window that shrank since last session still shows the whole widget
+    // rather than placing an empty box that grows off the bottom edge. This
+    // is the only thing that ever moves a widget off its remembered top, and
+    // it only applies at the placement instant — once placed, content growth
+    // never repositions it (see observeWidgetResize).
+    const hFit = Math.max(wh, hRef);
     widgetEl.style.right = "auto";
     widgetEl.style.left  = Math.round(gtClamp(left, 0, Math.max(0, vw - ww))) + "px";
-    widgetEl.style.top   = Math.round(gtClamp(top,  0, Math.max(0, vh - wh))) + "px";
+    widgetEl.style.top   = Math.round(gtClamp(top,  0, Math.max(0, vh - hFit))) + "px";
   }
 
   // ── Apply position / size from groupData to a widget ──────────
@@ -2008,7 +2039,15 @@ function gtMain() {
     // (resize/zoom) repositioning; content changes keep the top-left and
     // re-sync anchors instead (refreshGroupAnchors / the height observer).
     if (widgetEl.dataset.gtPlaced !== "1") {
-      applyWidgetPosition(widgetEl, normalizeGroupPosition(group, widgetEl));
+      const pos = normalizeGroupPosition(group, widgetEl);
+      applyWidgetPosition(widgetEl, pos);
+      // A stored height makes that projection land the widget on its exact
+      // remembered top even while it's still empty — so it is PLACED now,
+      // before a single goal section exists, and everything that streams in
+      // later just grows it downward. (Without a height — a position saved
+      // by an older build — placement waits for the first populated layout
+      // in observeWidgetResize, which is the best guess available.)
+      if (gtStoredHeight(pos)) widgetEl.dataset.gtPlaced = "1";
     }
   }
 
@@ -2331,14 +2370,15 @@ function gtMain() {
   // doesn't spam saveGroups(). One observer per widget; when the
   // widget is removed from the DOM the observer becomes inert.
   function observeWidgetResize(widgetEl, groupId) {
-    let t, lastH = 0, settleTimer = 0;
+    let t, lastH = 0;
     new ResizeObserver(() => {
       // Height changes flow through two distinct cases:
-      //   1. FIRST populated layout — a restored widget was created (near-)
-      //      empty at its stored spot and its goals just rendered in:
-      //      RE-APPLY the stored anchors at the real height so it LANDS
-      //      correctly (a bottom/centre-anchored widget's on-screen top
-      //      depends on its height).
+      //   1. FIRST populated layout, LEGACY POSITIONS ONLY — a position saved
+      //      before heights were stored can't be projected onto an empty
+      //      widget, so applyWidgetTransform left it unplaced. Land it at the
+      //      first real height and lock. Runs at most once per widget ever:
+      //      case 2 immediately records a height, and every later save
+      //      carries one.
       //   2. LATER content change — a goal added/removed, min-height reset,
       //      or content growth. Keep the top-left FIXED: the widget grows
       //      or shrinks downward in place. (Re-projecting the anchors here
@@ -2365,27 +2405,26 @@ function gtMain() {
         if (populated && !wDrag && !dragInProgress) {
           const alreadyPlaced = widgetEl.dataset.gtPlaced === "1";
           const group = groupData[groupId];
-          // Goal sections stream in over several seconds as their async data
-          // resolves (rank @3s, exp-rank @6s, max-quotes @12s, race-reqs @15s
-          // — see startLeaderIntervals / reconcileGoalOrder's comment above),
-          // and even once a section exists its OWN sub-content (rival
+          // Goal sections stream in over ~24s as their async data resolves
+          // (rank @3s, exp-rank @6s, max-quotes @12s, race-reqs @15s, rivals
+          // @21s — see startLeaderIntervals / reconcileGoalOrder's comment
+          // above), and even once a section exists its OWN sub-content (rival
           // standings, sync/filtered lines, avg-acc thresholds, countdown
-          // rows, ...) can keep growing it well after it first mounts — so
-          // counting sections isn't enough to know the widget's final
-          // height. Locking gtPlaced on an early height change used to
-          // freeze a bottom/centre-anchored widget's top at whatever height
-          // had been reached so far; later growth then only extended the
-          // widget DOWNWARD from that too-early top, visibly pushing it past
-          // where it was actually placed. So keep RE-projecting the stored
-          // anchors at the real height on every change, and only lock
-          // top-left ("grow in place") once the height has gone QUIET for a
-          // beat — no further change for GT_SETTLE_MS.
+          // rows, ...) keeps growing it well after it first mounts. There is
+          // therefore no moment at which the widget's height can be called
+          // final, and every scheme that tried to find one drifted: waiting
+          // for the height to go quiet only found the 3s gaps BETWEEN
+          // arrivals, so the widget locked at ~4.5s and all the later growth
+          // re-derived the anchors from a taller rect — pushing the stored
+          // top down a little further on every browser restart. The height is
+          // now stored WITH the anchors instead (gtAnchorsFromRect), so the
+          // remembered top needs no guessing: the widget is placed before any
+          // content exists and this observer only ever grows it downward.
           if (!alreadyPlaced) {
             if (group && group.position) {
               applyWidgetPosition(widgetEl, normalizeGroupPosition(group, widgetEl));
             }
-            clearTimeout(settleTimer);
-            settleTimer = setTimeout(() => { widgetEl.dataset.gtPlaced = "1"; }, GT_SETTLE_MS);
+            widgetEl.dataset.gtPlaced = "1";
           } else if (group && group.position) {
             // Keep top-left; sync anchors to the new rect (guarded — see
             // refreshGroupAnchors). Persisted by the debounced save below.
