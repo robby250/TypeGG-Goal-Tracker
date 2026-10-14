@@ -79,7 +79,7 @@ function gtMain() {
   }
 
   // localStorage proxy: transparently namespaces OUR keys (those starting with
-  // "gt") by universe while leaving the site's own keys (e.g. pocketbase_auth)
+  // "gt") by universe while leaving the site's own keys (e.g. chat-minimized)
   // untouched. With GT_NS === "" this is a pure pass-through, so English is
   // byte-for-byte unchanged. Shadowing the global here scopes every existing
   // localStorage.* call in this closure with zero call-site changes. key()
@@ -322,27 +322,33 @@ function gtMain() {
   setInterval(broadcastVisibilityPing, 10_000);
   broadcastVisibilityPing(); // initial announcement
 
-  // ── Auth (reads TypeGG's own localStorage entry) ───────────────
-  function getAuth() {
+  // ── Auth ───────────────────────────────────────────────────────
+  // TypeGG keeps its session in an httpOnly cookie (pocketbase_auth left
+  // localStorage), so JS can't read it. The SvelteKit root layout data names the
+  // logged-in user; refreshAuth fetches it as the page and caches the username
+  // so a fresh tab renders at once. The public API itself needs no token.
+  const AUTH_USER_KEY = "gt-auth-user";
+  let authUsername = localStorage.getItem(AUTH_USER_KEY);
+  function getAuth() { return { username: authUsername }; }
+
+  // Logged in iff the site reports a user. The single source of truth for the
+  // logged-out gate (panel + fetch short-circuit).
+  function isLoggedIn() { return authUsername != null; }
+
+  async function refreshAuth() {
     try {
-      const raw = localStorage.getItem("pocketbase_auth");
-      if (!raw) return { token: null, username: null };
-      const parsed = JSON.parse(raw);
-      return {
-        token:    parsed?.token             ?? null,
-        username: parsed?.record?.username  ?? null,
-      };
-    } catch { return { token: null, username: null }; }
+      const pageFetch = globalThis.content?.fetch ?? fetch; // Firefox: page-context fetch carries the site cookie
+      const r = await pageFetch(`${location.origin}/__data.json?x-sveltekit-invalidated=1`, { credentials: "include" });
+      if (!r.ok) return; // unknown → keep the cached state
+      const data = (await r.json())?.nodes?.[0]?.data; // devalue: fields are indices into data
+      if (!Array.isArray(data)) return;
+      const user = data[data[0]?.user];
+      const name = user && typeof user === "object" ? data[user.username] : null;
+      authUsername = typeof name === "string" ? name : null;
+      if (authUsername) localStorage.setItem(AUTH_USER_KEY, authUsername);
+      else localStorage.removeItem(AUTH_USER_KEY);
+    } catch {}
   }
-
-  function authHeaders() {
-    const { token } = getAuth();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
-  // Logged in iff TypeGG's pocketbase_auth holds a token. The single source of
-  // truth for the logged-out gate (panel + fetch short-circuit). Read fresh.
-  function isLoggedIn() { return getAuth().token != null; }
 
   // ══════════════════════════════════════════════════════════════
   // Shared API throttle gate — wraps EVERY call to the TypeGG API.
@@ -4708,7 +4714,7 @@ function gtMain() {
     return withLang(path);
   }
   async function fetchLeaderRows(page, country) {
-    const r = await gtApiFetch(leadersUrl(page, country), { headers: authHeaders() });
+    const r = await gtApiFetch(leadersUrl(page, country), {});
     if (!r.ok) throw new Error("Leaderboard fetch failed");
     const rows = (await r.json()).users || [];
     // Refusing rows from the wrong country matters: if the filter were ever
@@ -4751,7 +4757,7 @@ function gtMain() {
     else if (selector.value  != null) url.searchParams.set("value",  selector.value);
     else if (selector.rank   != null) url.searchParams.set("rank",   selector.rank);
     if (opts.country) url.searchParams.set("country", opts.country);
-    const r = await gtApiFetch(url.toString(), { headers: authHeaders() });
+    const r = await gtApiFetch(url.toString(), {});
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`leaders/rank ${sort} failed: ${r.status}`);
     return r.json(); // { rank, value, valueUntilNextRank }
@@ -4821,7 +4827,7 @@ function gtMain() {
   async function getPpByUsername(username) {
     const url = withLang(`https://api.typegg.io/v1/users/${encodeURIComponent(username)}`);
     
-    const response = await gtApiFetch(url, { headers: authHeaders() });
+    const response = await gtApiFetch(url, {});
     if (!response.ok) throw new Error("User fetch failed");
     
     const data = await response.json();
@@ -4836,7 +4842,7 @@ function gtMain() {
 async function getExpByUsername(username) {
     const url = `https://api.typegg.io/v1/users/${encodeURIComponent(username)}`;
     
-    const response = await gtApiFetch(url, { headers: authHeaders() });
+    const response = await gtApiFetch(url, {});
     if (!response.ok) throw new Error("User fetch failed");
     
     const data = await response.json();
@@ -4939,7 +4945,7 @@ async function getExpRankByUsername(username) {
     const name = username ?? "fruit";
     const res = await gtApiFetch(
       `https://api.typegg.io/v1/users/${encodeURIComponent(name)}/quotes?status=${status}&perPage=1`,
-      { headers: { Accept: 'application/json', ...authHeaders() } }
+      { headers: { Accept: 'application/json' } }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -6522,7 +6528,7 @@ async function getExpRankByUsername(username) {
         const typed = username;
         try {
           const url = `https://api.typegg.io/v1/users/${encodeURIComponent(typed)}`;
-          const r = await gtApiFetch(url, { headers: authHeaders() });
+          const r = await gtApiFetch(url, {});
           if (r.status === 404) throw new Error("not found");
           if (!r.ok) throw new Error("busy"); // 429/5xx — not a "no such user"
           const d = await r.json();
@@ -7883,7 +7889,7 @@ async function getExpRankByUsername(username) {
     }
 
     try {
-      const response = await gtApiFetch(userEndpoint(), { headers: authHeaders() });
+      const response = await gtApiFetch(userEndpoint(), {});
       const data     = await response.json();
       const cfg      = GOAL_CONFIG[selectedType];
       
@@ -8890,7 +8896,7 @@ async function getExpRankByUsername(username) {
     // actually needs it — ranked goals are fully covered by quotesTyped.
     const needUnranked = quotesNeedUnrankedData();
     const [response, unrankedTyped] = await Promise.all([
-      gtApiFetch(userEndpoint(), { headers: authHeaders() }, { lane: "urgent" }),
+      gtApiFetch(userEndpoint(), {}, { lane: "urgent" }),
       needUnranked
         ? getUserQuotesTyped("unranked").catch(e => {
             console.error("Unranked-typed fetch failed:", e.message);
@@ -10158,7 +10164,7 @@ async function getExpRankByUsername(username) {
     const { username } = getAuth();
     if (!username) return null;
     const url = `https://api.typegg.io/v1/users/${encodeURIComponent(username)}/quotes/${encodeURIComponent(quoteId)}`;
-    const r = await gtApiFetch(url, { headers: authHeaders() });
+    const r = await gtApiFetch(url, {});
     if (r.status === 404) return null;          // never raced this quote
     if (!r.ok) throw new Error(`user-quote ${quoteId} → ${r.status}`);
     const data = await r.json();
@@ -10187,7 +10193,7 @@ async function getExpRankByUsername(username) {
     const out = [];
     let page = 1, totalPages = 1;
     do {
-      const r = await gtApiFetch(`${base}&page=${page}&perPage=500`, { headers: authHeaders() });
+      const r = await gtApiFetch(`${base}&page=${page}&perPage=500`, {});
       if (r.status === 404) return [];
       if (!r.ok) throw new Error(`user-quote-races ${quoteId} → ${r.status}`);
       const d = await r.json();
@@ -11144,7 +11150,7 @@ async function getExpRankByUsername(username) {
 
     let r;
     try {
-      r = await gtApiFetch(url, { headers: authHeaders() });
+      r = await gtApiFetch(url, {});
     } catch (e) {
       if (gtDiagWatch && !e?.gtThrottled) {
         const ms = Math.round(performance.now() - gtDiagT0);
@@ -11195,7 +11201,7 @@ async function getExpRankByUsername(username) {
   const rivalQuoteBestInFlight = new Map(); // `${key}:${qid}` → Promise
   async function fetchRivalQuoteBest(fetchName, quoteId) {
     const url = `https://api.typegg.io/v1/users/${encodeURIComponent(fetchName)}/quotes/${encodeURIComponent(quoteId)}`;
-    const r = await gtApiFetch(url, { headers: authHeaders() }, { lane: "urgent" });
+    const r = await gtApiFetch(url, {}, { lane: "urgent" });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`rival quote ${fetchName}/${quoteId} → ${r.status}`);
     const d = await r.json();
@@ -11601,7 +11607,7 @@ async function getExpRankByUsername(username) {
     if (!isLoggedIn()) { stopAllRivalTimers(); return; } // logged out: no rival/self work, stores kept
     const map = referencedRivalMap();
     const haveRivalGoals = map.size > 0;
-    const { token, username } = getAuth();
+    const { username } = getAuth();
     // F1 — proactive self prefetch. Even with NO rival goal yet, build the self
     // store for a logged-in user so the FIRST rival goal is low-friction rather
     // than triggering a multi-minute bulk build. Only the one-time self bulk
@@ -11609,7 +11615,7 @@ async function getExpRankByUsername(username) {
     // the ongoing incremental refresh on a rival goal existing, and
     // ensureCurrentQuoteForRivals only fires when a rival goal is on screen. So
     // "logged in, no rival goal" runs the self bulk to completion and then goes
-    // quiet. Gated on being logged in (token present); skipped when logged out.
+    // quiet. Gated on being logged in; skipped when logged out.
     //
     // (Historically the self store built ONLY once a rival goal existed, to
     // avoid an unconditional bulk for every user at startup. The bulk is a paced,
@@ -11617,7 +11623,7 @@ async function getExpRankByUsername(username) {
     // fetches again — so with a small user base the friction win is worth the
     // one-time cost. The self store is still never DELETED, only its active
     // syncing stops when there's neither a rival goal nor a login to prefetch.)
-    const prefetchSelf = !!token;
+    const prefetchSelf = !!username;
     const wanted     = new Set();
     const wantedKeys = new Set();
     if (haveRivalGoals || prefetchSelf) {
@@ -13264,7 +13270,7 @@ async function getExpRankByUsername(username) {
         adding = true; addBtn.disabled = true; setAddStatus("Checking\u2026", false);
         try {
           const url = `https://api.typegg.io/v1/users/${encodeURIComponent(typed)}`;
-          const r = await gtApiFetch(url, { headers: authHeaders() });
+          const r = await gtApiFetch(url, {});
           if (r.status === 404) throw new Error("not found");
           if (!r.ok) throw new Error("busy"); // 429/5xx — not a "no such user"
           const d = await r.json();
@@ -13999,7 +14005,7 @@ async function getExpRankByUsername(username) {
       await Promise.all([...usernames].map(async (name) => {
         try {
           const url = withLang(`https://api.typegg.io/v1/users/${encodeURIComponent(name)}`);
-          const r = await gtApiFetch(url, { headers: authHeaders() });
+          const r = await gtApiFetch(url, {});
           if (!r.ok) return;
           const data = await r.json();
           userStats.set(name, {
@@ -14073,7 +14079,7 @@ async function getExpRankByUsername(username) {
     const { username } = getAuth();
     if (!username) throw new Error("no auth");
     const url = `https://api.typegg.io/v1/users/${encodeURIComponent(username)}/races`;
-    const r = await gtApiFetch(url, { headers: authHeaders() }, { lane: "urgent" });
+    const r = await gtApiFetch(url, {}, { lane: "urgent" });
     if (!r.ok) throw new Error(`races endpoint ${r.status}`);
     const data = await r.json();
     const races = Array.isArray(data?.races) ? data.races : null;
@@ -14124,7 +14130,7 @@ async function getExpRankByUsername(username) {
 
   async function fetchQuoteFromApi(quoteId) {
     const url = `https://api.typegg.io/v1/quotes/${encodeURIComponent(quoteId)}`;
-    const r = await gtApiFetch(url, { headers: authHeaders() }, { lane: "urgent" });
+    const r = await gtApiFetch(url, {}, { lane: "urgent" });
     if (!r.ok) throw new Error(`quote ${quoteId} → ${r.status}`);
     return await r.json();
   }
@@ -15120,8 +15126,8 @@ async function getExpRankByUsername(username) {
     // it back to logical key space so the comparisons below still match.
     const k = logiKey(e.key);
 
-    // Auth changed in another tab (TypeGG's own key)? Re-evaluate the gate.
-    if (k === 'pocketbase_auth') { checkAuthTransition(); return; }
+    // Another tab saw a login/logout? Adopt it and re-evaluate the gate.
+    if (k === AUTH_USER_KEY) { authUsername = e.newValue; checkAuthTransition(); return; }
 
     // Recurrence settings change?
     if (k === REC_SETTINGS_KEY) {
@@ -15205,8 +15211,8 @@ async function getExpRankByUsername(username) {
   });
 
   // ── Auth-state watcher (login / logout transitions) ──────────
-  // getAuth() (TypeGG's pocketbase_auth) is the source of truth. A login or
-  // logout in THIS tab does NOT fire a storage event (those are cross-tab
+  // refreshAuth() (the site's session cookie) is the source of truth. A login
+  // or logout in THIS tab does NOT fire a storage event (those are cross-tab
   // only), and when logged out the stats poll is paused so there's nothing to
   // piggyback — so we also poll the auth state on a light interval. The
   // cross-tab case is handled by the storage listener above; both funnel
@@ -15235,7 +15241,10 @@ async function getExpRankByUsername(username) {
     console.log(`[Goal Tracker] auth ${now ? "login" : "logout"} detected`);
     onAuthChange(now);
   }
-  setInterval(checkAuthTransition, 3_000);
+  const pollAuth = () => refreshAuth().then(checkAuthTransition);
+  pollAuth();
+  setInterval(pollAuth, 15_000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollAuth(); });
 
   // ── Hydrate rival stores from IndexedDB (every tab) ──────────
   // Runs the one-time localStorage→IDB migration, loads stores into the cache,
