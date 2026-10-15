@@ -18,8 +18,9 @@ function isWin(r) {
   return finishers.length > 0 && r.wpm >= Math.max(...finishers.map((p) => p.wpm));
 }
 
-// races: API race objects (any order, may include quits); bests: quote-bests list.
-// Callers pass one mode (solo or multiplayer) at a time; mixing them blurs both.
+// races: API race objects (any order, may include quits), already filtered to
+// the tab's mode/view; bests: quote-bests list, used only for quote languages.
+// Quote bests are recomputed from `races` so they follow the tab too.
 function computeStats(races, bests) {
   const rs = races.filter((r) => r.completionType === "finished")
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
@@ -43,6 +44,7 @@ function computeStats(races, bests) {
 
   const months = new Map();
   const langs = new Map();
+  const quoteBest = new Map(); // quoteId → best wpm within these races
   for (const r of rs) {
     const k = monthKey(r.timestamp);
     const m = months.get(k) || { month: k, races: 0, multi: 0, wpm: 0, best: 0, wins: 0, acc: 0 };
@@ -55,10 +57,11 @@ function computeStats(races, bests) {
     const g = langs.get(l) || { language: l, races: 0, best: 0, quotes: 0, bestsWpm: 0, last: null };
     g.races++; g.best = Math.max(g.best, r.wpm); g.last = r.timestamp;
     langs.set(l, g);
+    if (r.quoteId) quoteBest.set(r.quoteId, Math.max(quoteBest.get(r.quoteId) || 0, r.wpm));
   }
-  for (const b of bests) {
-    const g = langs.get(b.quote.language);
-    if (g) { g.quotes++; g.bestsWpm += b.bestRace.wpm; }
+  for (const [id, w] of quoteBest) {
+    const g = langs.get(lang.get(id) || "Unknown");
+    g.quotes++; g.bestsWpm += w;
   }
 
   return {
@@ -74,8 +77,8 @@ function computeStats(races, bests) {
     cov: mean ? sd / mean : 0,
     wins: rs.filter(isWin).length,
     multi: rs.filter((r) => r.match).length,
-    quoteBestsAvg: avg(bests.map((b) => b.bestRace.wpm)),
-    quotes: bests.length,
+    quoteBestsAvg: avg([...quoteBest.values()]),
+    quotes: quoteBest.size,
     marathon,
     months: [...months.values()].sort((a, b) => b.month.localeCompare(a.month)),
     languages: [...langs.values()].sort((a, b) => b.races - a.races),
@@ -205,15 +208,16 @@ if (typeof document !== "undefined") {
   // other (unranked includes custom lobby text, quoteId null); "All" combines.
   function render(data, view = "ranked", mode = "multi") {
     const { user, rankings, authed, savedAt } = data;
-    // ranked/multi: whether ranked-only (pp, nWPM, placements) and multiplayer-only
-    // (wins) stats apply; the daily quote is a ranked solo mode.
+    // ranked/multi: whether ranked-only (race pp) and multiplayer-only (wins)
+    // stats apply; the daily quote streak is a ranked solo stat.
     const ranked = view !== "unranked", multi = mode !== "solo";
-    const bests = data.bests.filter((b) => view === "all" || !!b.quote.ranked === ranked);
     const ids = new Set(data.bests.filter((b) => b.quote.ranked).map((b) => b.quote.quoteId));
     const races = data.races.filter((r) => (view === "all" || ids.has(r.quoteId) === ranked) && (mode === "all" || !!r.match === multi));
-    const s = computeStats(races, bests);
+    const s = computeStats(races, data.bests);
+    // Account-wide API totals can't be split by mode, so they live on the All tab.
+    const account = mode === "all" && ranked;
     const st = user.stats;
-    const quoteText = new Map(bests.map((b) => [b.quote.quoteId, b.quote.text]));
+    const quoteText = new Map(data.bests.map((b) => [b.quote.quoteId, b.quote.text]));
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     const ranks = Object.entries(rankings.positionCounts || {}).map(([k, v]) => [+k, v]).sort((a, b) => a[0] - b[0]);
     const maxRank = Math.max(1, ...ranks.map((r) => r[1]));
@@ -236,14 +240,14 @@ if (typeof document !== "undefined") {
         ${row("Average of fastest 10", `${f(s.fastest10)} wpm`)}
         ${row("Quote bests average", `${f(s.quoteBestsAvg)} wpm (${s.quotes.toLocaleString()} quotes)`)}
         ${multi ? row("Wins", `${s.wins.toLocaleString()} of ${s.multi.toLocaleString()} multiplayer (${pct(s.multi ? s.wins / s.multi : 0)})`) : ""}
-        ${ranked ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
+        ${account ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
         ${row("Average career speed", `${f(s.avgWpm)} wpm`)}
         ${row("Accuracy", pct(s.accuracy))}
         ${row("100% accuracy races", `${f(s.perfectAvg)} wpm average (${pct(s.perfectShare)} of races)`)}
         ${row("Standard deviation", `${f(s.sd)} wpm`)}
         ${row("Coefficient of variation", pct(s.cov))}
         ${row("Top marathon", s.marathon.start ? `${s.marathon.races} races in 24 hours, starting ${date(s.marathon.start)}` : "—")}
-        ${ranked ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
+        ${account ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
         ${mode !== "multi" && ranked ? row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`) : ""}
       </table></section>
       <section><h2>Career by month</h2>${chart(s.months)}
@@ -261,7 +265,7 @@ if (typeof document !== "undefined") {
       <section><h2>Languages</h2><table><thead><tr><th>Language</th><th>Races</th><th>Best race</th><th>Quote bests avg</th><th>Quotes</th><th>Last race</th></tr></thead><tbody>
         ${s.languages.map((l) => `<tr><td>${esc(l.language)}</td><td>${l.races}</td><td>${f(l.best)}</td><td>${l.quotes ? f(l.bestsWpm / l.quotes) : "—"}</td><td>${l.quotes}</td><td>${date(l.last)}</td></tr>`).join("")}
         </tbody></table></section>
-      ${ranked ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
+      ${account ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
         <div class="hist">${ranks.map(([k, v]) => `<div class="col" title="#${k}: ${v} quotes"><div style="height:${(v / maxRank) * 100}%"></div></div>`).join("")}</div>
         <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>` : ""}`;
     for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => render(data, b.dataset.view || view, b.dataset.mode || mode);

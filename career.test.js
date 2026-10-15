@@ -28,6 +28,7 @@ assert.equal(s.last20[0].raceNumber, 4);
 const solo = computeStats(races.filter((r) => !r.match), bests);
 assert.equal(solo.races, 2);
 assert.equal(solo.wins, 0);
+assert.deepEqual([s.quotes, s.quoteBestsAvg, solo.quotes, solo.quoteBestsAvg], [1, 200, 1, 100]); // per-tab quote bests
 const all = computeStats(races, bests);
 assert.deepEqual([all.races, all.wins, all.multi], [5, 2, 3]);
 assert.deepEqual(all.months.map((m) => [m.month, m.races, m.multi, m.wins]), [["2026-02", 1, 0, 0], ["2026-01", 4, 3, 2]]);
