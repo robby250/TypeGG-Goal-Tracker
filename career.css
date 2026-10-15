@@ -1,0 +1,39 @@
+/* Same palette as the widget/popup: dark navy, gray labels, #3b82f6 accent. */
+body { margin: 0; background: #02030f; color: #e5e7eb; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+header { position: sticky; top: 0; display: flex; gap: 10px; align-items: center; padding: 10px 24px; background: rgba(0, 3, 27, 0.95); border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+main { max-width: 1100px; margin: 0 auto; padding: 8px 24px 48px; }
+a { color: #93c5fd; text-decoration: none; }
+a:hover { text-decoration: underline; }
+input, button { background: #1e2231; color: #fff; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 5px 10px; font: inherit; }
+button { cursor: pointer; }
+button:hover { border-color: #3b82f6; }
+#status { color: #9ca3af; }
+h1 { font-size: 22px; margin: 18px 0 2px; }
+h2 { font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 10px; }
+section { background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 10px; padding: 14px 16px; margin: 16px 0; overflow-x: auto; }
+.sub { color: #9ca3af; margin: 0 0 8px; }
+.note { background: #1e3a5f; border: 1px solid #3b82f6; border-radius: 8px; padding: 8px 12px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 4px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+th:first-child, td:first-child, td.quote { text-align: left; }
+thead th { color: #9ca3af; font-weight: 600; }
+tbody tr:hover { background: rgba(59, 130, 246, 0.08); }
+table.kv { width: auto; }
+table.kv th { text-align: left; color: #9ca3af; font-weight: 500; }
+table.kv td { text-align: left; }
+svg { width: 100%; height: auto; display: block; margin-bottom: 6px; }
+svg text { fill: #9ca3af; font-size: 11px; }
+svg .grid line { stroke: rgba(255, 255, 255, 0.07); }
+svg path { fill: none; stroke-width: 2; }
+svg .avg { stroke: #3b82f6; }
+svg .best { stroke: #f59e0b; stroke-dasharray: 4 3; }
+svg circle { fill: #3b82f6; }
+svg .bar { fill: rgba(156, 163, 175, 0.25); }
+.legend { color: #9ca3af; margin-bottom: 12px; }
+.legend .k { display: inline-block; width: 14px; height: 3px; margin: 0 4px 3px 12px; vertical-align: middle; }
+.k.avg { background: #3b82f6; } .k.best { background: #f59e0b; } .k.bar { background: rgba(156, 163, 175, 0.5); height: 10px; }
+.hist { display: flex; align-items: flex-end; gap: 1px; height: 140px; }
+.hist .col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.hist .col div { width: 100%; background: #3b82f6; border-radius: 2px 2px 0 0; }
+.hist .col:hover div { background: #93c5fd; }
+.hist-axis { display: flex; justify-content: space-between; color: #9ca3af; font-size: 11px; }

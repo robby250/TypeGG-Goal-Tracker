@@ -347,6 +347,7 @@ function gtMain() {
       authUsername = typeof name === "string" ? name : null;
       if (authUsername) localStorage.setItem(AUTH_USER_KEY, authUsername);
       else localStorage.removeItem(AUTH_USER_KEY);
+      chrome.storage.local.set({ gtAuthUser: authUsername }); // career page's "own user"
     } catch {}
   }
 
@@ -15241,6 +15242,22 @@ async function getExpRankByUsername(username) {
     console.log(`[Goal Tracker] auth ${now ? "login" : "logout"} detected`);
     onAuthChange(now);
   }
+  // ── Career page button on /user/<name> profiles ───────────────
+  // SvelteKit navigates client-side with no hook we own, so poll the path.
+  const careerBtn = document.createElement("button");
+  careerBtn.id = "gt-career-btn";
+  careerBtn.textContent = "Career";
+  careerBtn.title = "Open the Goal Tracker career page for this player";
+  careerBtn.addEventListener("click", () => {
+    const name = location.pathname.match(/^\/user\/([^/?#]+)/)?.[1];
+    if (name) window.open(chrome.runtime.getURL(`career.html?user=${name}`), "_blank");
+  });
+  setInterval(() => {
+    const onProfile = /^\/user\/[^/?#]+/.test(location.pathname);
+    if (onProfile && !careerBtn.isConnected) document.body.appendChild(careerBtn);
+    else if (!onProfile && careerBtn.isConnected) careerBtn.remove();
+  }, 1000);
+
   const pollAuth = () => refreshAuth().then(checkAuthTransition);
   pollAuth();
   setInterval(pollAuth, 15_000);

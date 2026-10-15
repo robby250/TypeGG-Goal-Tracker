@@ -28,3 +28,7 @@ toggle.addEventListener("change", () => {
     render(hidden);
   });
 });
+// Opens the career page for the logged-in user (career.js reads gtAuthUser).
+document.getElementById("career").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("career.html") });
+});
