@@ -19,8 +19,8 @@ function isWin(r) {
 }
 
 // races: API race objects (any order, may include quits), already filtered to
-// the tab's mode/view; bests: quote-bests list, used only for quote languages.
-// Quote bests are recomputed from `races` so they follow the tab too.
+// the selected mode/quotes/language; bests: quote-bests list, used only for quote languages.
+// Quote bests are recomputed from `races` so they follow the filters too.
 function computeStats(races, bests) {
   const rs = races.filter((r) => r.completionType === "finished")
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
@@ -220,7 +220,7 @@ if (typeof document !== "undefined") {
     }
   }
 
-  // Ranked/unranked, multiplayer/solo and language are separate tabs so none
+  // Ranked/unranked, multiplayer/solo and language are separate filters so none
   // skews another (unranked includes custom lobby text, quoteId null; other
   // languages type slower); "All" combines.
   function render(data, t = { view: "ranked", mode: "multi", lang: "English" }) {
@@ -240,14 +240,14 @@ if (typeof document !== "undefined") {
       && (mode === "all" || !!r.match === multi) && (lang === "all" || langOf(r) === lang));
     const s = computeStats(races, data.bests);
     // Account-wide API totals can't be split by mode, so they live on the All
-    // mode tab, and need one language's universe stats.
+    // mode, and need one language's universe stats.
     const account = mode === "all" && ranked && !!uni;
     const st = (uni?.user || user).stats;
     const quoteText = new Map(data.bests.map((b) => [b.quote.quoteId, b.quote.text]));
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     const ranks = Object.entries(rankings.positionCounts || {}).map(([k, v]) => [+k, v]).sort((a, b) => a[0] - b[0]);
     const maxRank = Math.max(1, ...ranks.map((r) => r[1]));
-    const tabs = (attr, cur, opts) => `<nav class="tabs">${Object.entries(opts).map(([v, label]) => `<button data-${attr}="${esc(v)}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</nav>`;
+    const pick = (key, label, cur, opts) => `<label>${label} <select data-key="${key}">${Object.entries(opts).map(([v, text]) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${text}</option>`).join("")}</select></label>`;
     // The API's race counts ignore the universe param, so they only match "All" languages.
     const apiTotal = lang !== "all" ? "—" : ({
       "ranked|multi": st.quickplayRaces + st.lobbyRaces, "ranked|solo": st.soloRaces, "ranked|all": st.races,
@@ -258,8 +258,8 @@ if (typeof document !== "undefined") {
     $("content").innerHTML = `
       <h1>${flag(user.country)} <a href="https://typegg.io/user/${encodeURIComponent(user.username)}" target="_blank">${esc(user.displayName || user.username)}</a></h1>
       <p class="sub">Joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
-      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo", all: "All" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked", all: "All" })}
-        ${tabs("lang", lang, Object.fromEntries([...[...langCounts].sort((a, b) => b[1] - a[1]).map(([l]) => [l, esc(l)]), ["all", "All languages"]]))}</div>
+      <div class="filters">${pick("mode", "Mode", mode, { multi: "Multiplayer", solo: "Solo", all: "All" })}${pick("view", "Quotes", view, { ranked: "Ranked", unranked: "Unranked", all: "All" })}
+        ${pick("lang", "Language", lang, Object.fromEntries([...[...langCounts].sort((a, b) => b[1] - a[1]).map(([l]) => [l, esc(l)]), ["all", "All languages"]]))}</div>
       ${mode !== "multi" && !authed ? `<p class="note">Public data: TypeGG only exposes this player's best solo race per quote, so these solo stats cover PBs only.</p>` : ""}
       <section><h2>Summary</h2><table class="kv">
         ${row("Races", `${s.races.toLocaleString()} <small>(API total ${apiTotal})</small>`)}
@@ -296,8 +296,8 @@ if (typeof document !== "undefined") {
       ${account ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
         <div class="hist">${ranks.map(([k, v]) => `<div class="col" title="#${k}: ${v} quotes"><div style="height:${(v / maxRank) * 100}%"></div></div>`).join("")}</div>
         <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>` : ""}`;
-    for (const b of document.querySelectorAll(".tabs button")) b.onclick = async () => {
-      const next = { ...t, ...b.dataset };
+    for (const sel of document.querySelectorAll(".filters select")) sel.onchange = async () => {
+      const next = { ...t, [sel.dataset.key]: sel.value };
       try { await universe(data, next.lang); } catch (e) { status(`Error: ${e.message}`); }
       render(data, next);
     };

@@ -37,6 +37,6 @@ svg .bar { fill: rgba(156, 163, 175, 0.25); }
 .hist .col div { width: 100%; background: #3b82f6; border-radius: 2px 2px 0 0; }
 .hist .col:hover div { background: #93c5fd; }
 .hist-axis { display: flex; justify-content: space-between; color: #9ca3af; font-size: 11px; }
-.tabs { display: flex; gap: 6px; margin: 12px 0 0; }
-.tabs button.on { background: #1e3a5f; border-color: #3b82f6; color: #bfdbfe; }
-.tabrow { display: flex; gap: 18px; flex-wrap: wrap; }
+.filters { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; color: #9ca3af; }
+select { background: #1e2231; color: #fff; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 5px 8px; font: inherit; cursor: pointer; }
+select:hover, select:focus-visible { border-color: #3b82f6; }
