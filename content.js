@@ -15250,7 +15250,10 @@ async function getExpRankByUsername(username) {
   careerBtn.title = "Open the Goal Tracker career page for this player";
   careerBtn.addEventListener("click", () => {
     const name = location.pathname.match(/^\/user\/([^/?#]+)/)?.[1];
-    if (name) window.open(chrome.runtime.getURL(`career.html?user=${name}`), "_blank");
+    if (!name) return;
+    // After an extension reload this old content script's runtime is gone; a page reload attaches the new one.
+    if (!chrome.runtime?.id) return location.reload();
+    window.open(chrome.runtime.getURL(`career.html?user=${name}`), "_blank");
   });
   setInterval(() => {
     const onProfile = /^\/user\/[^/?#]+/.test(location.pathname);

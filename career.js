@@ -92,6 +92,7 @@ if (typeof document !== "undefined") {
   const API = "https://api.typegg.io/v1";
   const FULL_REFETCH_MS = 7 * DAY_MS;  // pp rebalances rewrite old races
   const EVICT_MS = 30 * DAY_MS;        // drop histories not opened for a month
+  const FILTERS_KEY = "gt-career-filters";
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   const f = (n, d = 2) => Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -299,6 +300,7 @@ if (typeof document !== "undefined") {
     for (const sel of document.querySelectorAll(".filters select")) sel.onchange = async () => {
       const next = { ...t, [sel.dataset.key]: sel.value };
       try { await universe(data, next.lang); } catch (e) { status(`Error: ${e.message}`); }
+      localStorage.setItem(FILTERS_KEY, JSON.stringify(next));
       render(data, next);
     };
   }
@@ -310,7 +312,11 @@ if (typeof document !== "undefined") {
     if (!username) return status("Log in on typegg.io once (so the extension learns your name), or type a username.");
     try {
       const data = await load(username, forceFull);
-      render(data);
+      // Filters persist across opens; a saved language this player never typed falls back to English.
+      const t = { view: "ranked", mode: "multi", lang: "English", ...JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}") };
+      if (t.lang !== "all" && !data.bests.some((b) => b.quote.language === t.lang)) t.lang = "English";
+      await universe(data, t.lang).catch(() => {});
+      render(data, t);
       status(data.authed ? "Full solo history (logged in as this player)." : "");
     } catch (e) {
       status(`Error: ${e.message}`);
