@@ -180,7 +180,7 @@ if (typeof document !== "undefined") {
     const rankings = await api(`/users/${u}/quote-rankings?maxRank=100`, token);
     const savedAt = rec ? rec.savedAt : Date.now();
     await tx("readwrite", (s) => s.put({ key, races, bests, savedAt, lastOpened: Date.now() }));
-    return { user, races, bests, rankings, authed: !!token, savedAt };
+    return { user, races, bests, authed: !!token, savedAt, u, token, universes: { English: { user, rankings } } };
   }
 
   function chart(months) {
@@ -204,25 +204,52 @@ if (typeof document !== "undefined") {
       <div class="legend"><span class="k avg"></span>Average WPM <span class="k best"></span>Best WPM <span class="k bar"></span>Races</div>`;
   }
 
-  // Ranked/unranked and multiplayer/solo are separate tabs so neither skews the
-  // other (unranked includes custom lobby text, quoteId null); "All" combines.
-  function render(data, view = "ranked", mode = "multi") {
-    const { user, rankings, authed, savedAt } = data;
+  // Per-language ("universe") account stats: pp, nWPM, rank and placements are
+  // scoped by the API's universe param; null when TypeGG has no such universe.
+  async function universe(data, lang) {
+    if (lang === "all" || lang in data.universes) return;
+    try {
+      const q = `universe=${encodeURIComponent(lang)}`;
+      data.universes[lang] = {
+        user: await api(`/users/${data.u}?${q}`, data.token),
+        rankings: await api(`/users/${data.u}/quote-rankings?maxRank=100&${q}`, data.token),
+      };
+    } catch (e) {
+      if (e.status !== 400) throw e;
+      data.universes[lang] = null;
+    }
+  }
+
+  // Ranked/unranked, multiplayer/solo and language are separate tabs so none
+  // skews another (unranked includes custom lobby text, quoteId null; other
+  // languages type slower); "All" combines.
+  function render(data, t = { view: "ranked", mode: "multi", lang: "English" }) {
+    const { view, mode, lang } = t;
+    const { user, authed, savedAt } = data;
+    const uni = data.universes[lang];
+    const rankings = uni?.rankings || {};
     // ranked/multi: whether ranked-only (race pp) and multiplayer-only (wins)
     // stats apply; the daily quote streak is a ranked solo stat.
     const ranked = view !== "unranked", multi = mode !== "solo";
     const ids = new Set(data.bests.filter((b) => b.quote.ranked).map((b) => b.quote.quoteId));
-    const races = data.races.filter((r) => (view === "all" || ids.has(r.quoteId) === ranked) && (mode === "all" || !!r.match === multi));
+    const quoteLang = new Map(data.bests.map((b) => [b.quote.quoteId, b.quote.language]));
+    const langOf = (r) => quoteLang.get(r.quoteId) || "Unknown";
+    const langCounts = new Map();
+    for (const r of data.races) langCounts.set(langOf(r), (langCounts.get(langOf(r)) || 0) + 1);
+    const races = data.races.filter((r) => (view === "all" || ids.has(r.quoteId) === ranked)
+      && (mode === "all" || !!r.match === multi) && (lang === "all" || langOf(r) === lang));
     const s = computeStats(races, data.bests);
-    // Account-wide API totals can't be split by mode, so they live on the All tab.
-    const account = mode === "all" && ranked;
-    const st = user.stats;
+    // Account-wide API totals can't be split by mode, so they live on the All
+    // mode tab, and need one language's universe stats.
+    const account = mode === "all" && ranked && !!uni;
+    const st = (uni?.user || user).stats;
     const quoteText = new Map(data.bests.map((b) => [b.quote.quoteId, b.quote.text]));
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     const ranks = Object.entries(rankings.positionCounts || {}).map(([k, v]) => [+k, v]).sort((a, b) => a[0] - b[0]);
     const maxRank = Math.max(1, ...ranks.map((r) => r[1]));
-    const tabs = (attr, cur, opts) => `<nav class="tabs">${Object.entries(opts).map(([v, label]) => `<button data-${attr}="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</nav>`;
-    const apiTotal = ({
+    const tabs = (attr, cur, opts) => `<nav class="tabs">${Object.entries(opts).map(([v, label]) => `<button data-${attr}="${esc(v)}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</nav>`;
+    // The API's race counts ignore the universe param, so they only match "All" languages.
+    const apiTotal = lang !== "all" ? "—" : ({
       "ranked|multi": st.quickplayRaces + st.lobbyRaces, "ranked|solo": st.soloRaces, "ranked|all": st.races,
       "unranked|all": st.unrankedRaces, "all|all": st.races + st.unrankedRaces,
     }[`${view}|${mode}`] ?? "—").toLocaleString();
@@ -231,7 +258,8 @@ if (typeof document !== "undefined") {
     $("content").innerHTML = `
       <h1>${flag(user.country)} <a href="https://typegg.io/user/${encodeURIComponent(user.username)}" target="_blank">${esc(user.displayName || user.username)}</a></h1>
       <p class="sub">Joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
-      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo", all: "All" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked", all: "All" })}</div>
+      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo", all: "All" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked", all: "All" })}
+        ${tabs("lang", lang, Object.fromEntries([...[...langCounts].sort((a, b) => b[1] - a[1]).map(([l]) => [l, esc(l)]), ["all", "All languages"]]))}</div>
       ${mode !== "multi" && !authed ? `<p class="note">Public data: TypeGG only exposes this player's best solo race per quote, so these solo stats cover PBs only.</p>` : ""}
       <section><h2>Summary</h2><table class="kv">
         ${row("Races", `${s.races.toLocaleString()} <small>(API total ${apiTotal})</small>`)}
@@ -240,7 +268,7 @@ if (typeof document !== "undefined") {
         ${row("Average of fastest 10", `${f(s.fastest10)} wpm`)}
         ${row("Quote bests average", `${f(s.quoteBestsAvg)} wpm (${s.quotes.toLocaleString()} quotes)`)}
         ${multi ? row("Wins", `${s.wins.toLocaleString()} of ${s.multi.toLocaleString()} multiplayer (${pct(s.multi ? s.wins / s.multi : 0)})`) : ""}
-        ${account ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
+        ${account ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) + row(`${esc(lang)} rank`, `#${uni.user.globalRank}`) : ""}
         ${row("Average career speed", `${f(s.avgWpm)} wpm`)}
         ${row("Accuracy", pct(s.accuracy))}
         ${row("100% accuracy races", `${f(s.perfectAvg)} wpm average (${pct(s.perfectShare)} of races)`)}
@@ -248,7 +276,7 @@ if (typeof document !== "undefined") {
         ${row("Coefficient of variation", pct(s.cov))}
         ${row("Top marathon", s.marathon.start ? `${s.marathon.races} races in 24 hours, starting ${date(s.marathon.start)}` : "—")}
         ${account ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
-        ${mode !== "multi" && ranked ? row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`) : ""}
+        ${mode !== "multi" && ranked && (lang === "all" || lang === "English") ? row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`) : ""}
       </table></section>
       <section><h2>Career by month</h2>${chart(s.months)}
         <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th>${multi ? "<th>Wins</th><th>Win %</th>" : ""}<th>Acc.</th></tr></thead><tbody>
@@ -262,13 +290,17 @@ if (typeof document !== "undefined") {
           return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td>${outcome}<td>${pct(r.accuracy)}</td>${ranked ? `<td>${f(r.pp)}</td>` : ""}</tr>`;
         }).join("")}
         </tbody></table></section>
-      <section><h2>Languages</h2><table><thead><tr><th>Language</th><th>Races</th><th>Best race</th><th>Quote bests avg</th><th>Quotes</th><th>Last race</th></tr></thead><tbody>
+      ${lang !== "all" ? "" : `<section><h2>Languages</h2><table><thead><tr><th>Language</th><th>Races</th><th>Best race</th><th>Quote bests avg</th><th>Quotes</th><th>Last race</th></tr></thead><tbody>
         ${s.languages.map((l) => `<tr><td>${esc(l.language)}</td><td>${l.races}</td><td>${f(l.best)}</td><td>${l.quotes ? f(l.bestsWpm / l.quotes) : "—"}</td><td>${l.quotes}</td><td>${date(l.last)}</td></tr>`).join("")}
-        </tbody></table></section>
+        </tbody></table></section>`}
       ${account ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
         <div class="hist">${ranks.map(([k, v]) => `<div class="col" title="#${k}: ${v} quotes"><div style="height:${(v / maxRank) * 100}%"></div></div>`).join("")}</div>
         <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>` : ""}`;
-    for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => render(data, b.dataset.view || view, b.dataset.mode || mode);
+    for (const b of document.querySelectorAll(".tabs button")) b.onclick = async () => {
+      const next = { ...t, ...b.dataset };
+      try { await universe(data, next.lang); } catch (e) { status(`Error: ${e.message}`); }
+      render(data, next);
+    };
   }
 
   async function show(forceFull) {
