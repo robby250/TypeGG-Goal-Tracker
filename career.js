@@ -127,7 +127,9 @@ if (typeof document !== "undefined") {
   }
 
   async function api(path, token) {
-    const r = await fetch(API + path, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+    // A tripped per-IP limit comes back without CORS headers, so fetch rejects instead of returning 429.
+    const r = await fetch(API + path, token ? { headers: { Authorization: `Bearer ${token}` } } : {})
+      .catch(() => { throw new Error("TypeGG API unreachable (usually the rate limit) — wait a minute and reload."); });
     if (r.status === 429) throw new Error("TypeGG rate limit hit — wait a minute and reload.");
     if (!r.ok) throw Object.assign(new Error(`${path} → HTTP ${r.status}`), { status: r.status });
     return r.json();
@@ -170,7 +172,7 @@ if (typeof document !== "undefined") {
       races = (await allPages(`/users/${u}/races`, "races", token, "races")).filter(keep);
       bests = await allPages(`/users/${u}/quotes?status=any`, "quotes", token, "quote bests");
     }
-    const rankings = await api(`/users/${u}/quote-rankings?maxRank=100&status=any`, token);
+    const rankings = await api(`/users/${u}/quote-rankings?maxRank=100`, token);
     const savedAt = rec ? rec.savedAt : Date.now();
     await tx("readwrite", (s) => s.put({ key, races, bests, savedAt, lastOpened: Date.now() }));
     return { user, races, bests, rankings, authed: !!token, savedAt };
@@ -197,7 +199,14 @@ if (typeof document !== "undefined") {
       <div class="legend"><span class="k avg"></span>Average WPM <span class="k best"></span>Best WPM <span class="k bar"></span>Races</div>`;
   }
 
-  function render({ user, races, bests, rankings, authed, savedAt }) {
+  // Ranked and unranked races are separate tabs, never mixed: unranked quotes
+  // (and custom lobby text, quoteId null) would skew the ranked career.
+  function render(data, view = "ranked") {
+    const { user, rankings, authed, savedAt } = data;
+    const ranked = view === "ranked";
+    const bests = data.bests.filter((b) => !!b.quote.ranked === ranked);
+    const ids = new Set(data.bests.filter((b) => b.quote.ranked).map((b) => b.quote.quoteId));
+    const races = data.races.filter((r) => ids.has(r.quoteId) === ranked);
     const s = computeStats(races, bests);
     const st = user.stats;
     const quoteText = new Map(bests.map((b) => [b.quote.quoteId, b.quote.text]));
@@ -211,42 +220,43 @@ if (typeof document !== "undefined") {
       <h1>${flag(user.country)} <a href="https://typegg.io/user/${encodeURIComponent(user.username)}" target="_blank">${esc(user.displayName || user.username)}</a></h1>
       <p class="sub">Joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
       ${note}
+      <nav class="tabs">${["ranked", "unranked"].map((v) => `<button data-view="${v}" class="${v === view ? "on" : ""}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</nav>
       <section><h2>Summary</h2><table class="kv">
-        ${row("Races", `${s.races.toLocaleString()} <small>(API total ${(st.races + (st.unrankedRaces || 0)).toLocaleString()})</small>`)}
+        ${row("Races", `${s.races.toLocaleString()} <small>(API total ${(ranked ? st.races : st.unrankedRaces || 0).toLocaleString()})</small>`)}
         ${row("Best last 10 races", `${f(s.bestLast10)} wpm`)}
         ${row("Best single race", `${f(s.bestWpm)} wpm`)}
         ${row("Average of fastest 10", `${f(s.fastest10)} wpm`)}
         ${row("Quote bests average", `${f(s.quoteBestsAvg)} wpm (${s.quotes.toLocaleString()} quotes)`)}
         ${row("Wins", `${s.wins.toLocaleString()} of ${s.multi.toLocaleString()} multiplayer (${pct(s.multi ? s.wins / s.multi : 0)})`)}
-        ${row("Total pp", f(st.totalPp))}
-        ${row("nWPM", f(st.nWpm))}
+        ${ranked ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
         ${row("Average career speed", `${f(s.avgWpm)} wpm`)}
         ${row("Accuracy", pct(s.accuracy))}
         ${row("100% accuracy races", `${f(s.perfectAvg)} wpm average (${pct(s.perfectShare)} of races)`)}
         ${row("Standard deviation", `${f(s.sd)} wpm`)}
         ${row("Coefficient of variation", pct(s.cov))}
         ${row("Top marathon", s.marathon.start ? `${s.marathon.races} races in 24 hours, starting ${date(s.marathon.start)}` : "—")}
-        ${row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`)}
+        ${ranked ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
         ${row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`)}
       </table></section>
       <section><h2>Career by month</h2>${chart(s.months)}
-        <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th><th>Wins</th><th>Win %</th><th>Avg pp</th><th>Acc.</th><th>Time</th><th>Solo / Multi</th></tr></thead><tbody>
-        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td><td>${m.wins}</td><td>${m.multi ? pct(m.wins / m.multi) : "—"}</td><td>${f(m.pp / m.races)}</td><td>${pct(m.acc / m.races)}</td><td>${hours(m.timeMs)}</td><td>${m.solo} / ${m.multi}</td></tr>`).join("")}
+        <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th><th>Wins</th><th>Win %</th>${ranked ? "<th>Avg pp</th>" : ""}<th>Acc.</th><th>Time</th><th>Solo / Multi</th></tr></thead><tbody>
+        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td><td>${m.wins}</td><td>${m.multi ? pct(m.wins / m.multi) : "—"}</td>${ranked ? `<td>${f(m.pp / m.races)}</td>` : ""}<td>${pct(m.acc / m.races)}</td><td>${hours(m.timeMs)}</td><td>${m.solo} / ${m.multi}</td></tr>`).join("")}
         </tbody></table></section>
-      <section><h2>Last 20 races</h2><table><thead><tr><th>Race</th><th>Date</th><th>WPM</th><th>Quote</th><th>Outcome</th><th>Acc.</th><th>pp</th></tr></thead><tbody>
+      <section><h2>Last 20 races</h2><table><thead><tr><th>Race</th><th>Date</th><th>WPM</th><th>Quote</th><th>Outcome</th><th>Acc.</th>${ranked ? "<th>pp</th>" : ""}</tr></thead><tbody>
         ${s.last20.map((r) => {
           const me = r.match?.players.find((p) => p.userId === r.userId);
           const outcome = r.match ? `${isWin(r) ? "Win" : "No win"} (${me?.placement ?? "?"} of ${r.match.players.length})` : "Solo";
           const text = quoteText.get(r.quoteId) || r.quoteId || "custom text";
-          return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td><td>${outcome}</td><td>${pct(r.accuracy)}</td><td>${f(r.pp)}</td></tr>`;
+          return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td><td>${outcome}</td><td>${pct(r.accuracy)}</td>${ranked ? `<td>${f(r.pp)}</td>` : ""}</tr>`;
         }).join("")}
         </tbody></table></section>
       <section><h2>Languages</h2><table><thead><tr><th>Language</th><th>Races</th><th>Best race</th><th>Quote bests avg</th><th>Quotes</th><th>Last race</th></tr></thead><tbody>
         ${s.languages.map((l) => `<tr><td>${esc(l.language)}</td><td>${l.races}</td><td>${f(l.best)}</td><td>${l.quotes ? f(l.bestsWpm / l.quotes) : "—"}</td><td>${l.quotes}</td><td>${date(l.last)}</td></tr>`).join("")}
         </tbody></table></section>
-      <section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
+      ${ranked ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
         <div class="hist">${ranks.map(([k, v]) => `<div class="col" title="#${k}: ${v} quotes"><div style="height:${(v / maxRank) * 100}%"></div></div>`).join("")}</div>
-        <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>`;
+        <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>` : ""}`;
+    for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => render(data, b.dataset.view);
   }
 
   async function show(forceFull) {
