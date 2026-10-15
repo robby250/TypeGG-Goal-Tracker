@@ -45,8 +45,9 @@ function computeStats(races, bests) {
   const langs = new Map();
   for (const r of rs) {
     const k = monthKey(r.timestamp);
-    const m = months.get(k) || { month: k, races: 0, wpm: 0, best: 0, wins: 0, acc: 0 };
+    const m = months.get(k) || { month: k, races: 0, multi: 0, wpm: 0, best: 0, wins: 0, acc: 0 };
     m.races++; m.wpm += r.wpm; m.best = Math.max(m.best, r.wpm); m.acc += r.accuracy;
+    if (r.match) m.multi++;
     if (isWin(r)) m.wins++;
     months.set(k, m);
 
@@ -72,6 +73,7 @@ function computeStats(races, bests) {
     sd,
     cov: mean ? sd / mean : 0,
     wins: rs.filter(isWin).length,
+    multi: rs.filter((r) => r.match).length,
     quoteBestsAvg: avg(bests.map((b) => b.bestRace.wpm)),
     quotes: bests.length,
     marathon,
@@ -199,15 +201,16 @@ if (typeof document !== "undefined") {
       <div class="legend"><span class="k avg"></span>Average WPM <span class="k best"></span>Best WPM <span class="k bar"></span>Races</div>`;
   }
 
-  // Ranked/unranked and multiplayer/solo are separate tabs, never mixed:
-  // unranked quotes (and custom lobby text, quoteId null) would skew ranked,
-  // and solo retries of chosen quotes would skew multiplayer.
+  // Ranked/unranked and multiplayer/solo are separate tabs so neither skews the
+  // other (unranked includes custom lobby text, quoteId null); "All" combines.
   function render(data, view = "ranked", mode = "multi") {
     const { user, rankings, authed, savedAt } = data;
-    const ranked = view === "ranked", multi = mode === "multi";
-    const bests = data.bests.filter((b) => !!b.quote.ranked === ranked);
+    // ranked/multi: whether ranked-only (pp, nWPM, placements) and multiplayer-only
+    // (wins) stats apply; the daily quote is a ranked solo mode.
+    const ranked = view !== "unranked", multi = mode !== "solo";
+    const bests = data.bests.filter((b) => view === "all" || !!b.quote.ranked === ranked);
     const ids = new Set(data.bests.filter((b) => b.quote.ranked).map((b) => b.quote.quoteId));
-    const races = data.races.filter((r) => ids.has(r.quoteId) === ranked && !!r.match === multi);
+    const races = data.races.filter((r) => (view === "all" || ids.has(r.quoteId) === ranked) && (mode === "all" || !!r.match === multi));
     const s = computeStats(races, bests);
     const st = user.stats;
     const quoteText = new Map(bests.map((b) => [b.quote.quoteId, b.quote.text]));
@@ -215,21 +218,24 @@ if (typeof document !== "undefined") {
     const ranks = Object.entries(rankings.positionCounts || {}).map(([k, v]) => [+k, v]).sort((a, b) => a[0] - b[0]);
     const maxRank = Math.max(1, ...ranks.map((r) => r[1]));
     const tabs = (attr, cur, opts) => `<nav class="tabs">${Object.entries(opts).map(([v, label]) => `<button data-${attr}="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</nav>`;
-    const apiTotal = !ranked ? "—" : (multi ? st.quickplayRaces + st.lobbyRaces : st.soloRaces).toLocaleString();
+    const apiTotal = ({
+      "ranked|multi": st.quickplayRaces + st.lobbyRaces, "ranked|solo": st.soloRaces, "ranked|all": st.races,
+      "unranked|all": st.unrankedRaces, "all|all": st.races + st.unrankedRaces,
+    }[`${view}|${mode}`] ?? "—").toLocaleString();
 
     document.title = `${user.username} — TypeGG career`;
     $("content").innerHTML = `
       <h1>${flag(user.country)} <a href="https://typegg.io/user/${encodeURIComponent(user.username)}" target="_blank">${esc(user.displayName || user.username)}</a></h1>
       <p class="sub">Joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
-      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked" })}</div>
-      ${!multi && !authed ? `<p class="note">Public data: TypeGG only exposes this player's best solo race per quote, so these solo stats cover PBs only.</p>` : ""}
+      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo", all: "All" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked", all: "All" })}</div>
+      ${mode !== "multi" && !authed ? `<p class="note">Public data: TypeGG only exposes this player's best solo race per quote, so these solo stats cover PBs only.</p>` : ""}
       <section><h2>Summary</h2><table class="kv">
         ${row("Races", `${s.races.toLocaleString()} <small>(API total ${apiTotal})</small>`)}
         ${row("Best last 10 races", `${f(s.bestLast10)} wpm`)}
         ${row("Best single race", `${f(s.bestWpm)} wpm`)}
         ${row("Average of fastest 10", `${f(s.fastest10)} wpm`)}
         ${row("Quote bests average", `${f(s.quoteBestsAvg)} wpm (${s.quotes.toLocaleString()} quotes)`)}
-        ${multi ? row("Wins", `${s.wins.toLocaleString()} (${pct(s.races ? s.wins / s.races : 0)})`) : ""}
+        ${multi ? row("Wins", `${s.wins.toLocaleString()} of ${s.multi.toLocaleString()} multiplayer (${pct(s.multi ? s.wins / s.multi : 0)})`) : ""}
         ${ranked ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
         ${row("Average career speed", `${f(s.avgWpm)} wpm`)}
         ${row("Accuracy", pct(s.accuracy))}
@@ -238,16 +244,16 @@ if (typeof document !== "undefined") {
         ${row("Coefficient of variation", pct(s.cov))}
         ${row("Top marathon", s.marathon.start ? `${s.marathon.races} races in 24 hours, starting ${date(s.marathon.start)}` : "—")}
         ${ranked ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
-        ${row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`)}
+        ${mode !== "multi" && ranked ? row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`) : ""}
       </table></section>
       <section><h2>Career by month</h2>${chart(s.months)}
         <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th>${multi ? "<th>Wins</th><th>Win %</th>" : ""}<th>Acc.</th></tr></thead><tbody>
-        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td>${multi ? `<td>${m.wins}</td><td>${pct(m.wins / m.races)}</td>` : ""}<td>${pct(m.acc / m.races)}</td></tr>`).join("")}
+        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td>${multi ? `<td>${m.wins}</td><td>${m.multi ? pct(m.wins / m.multi) : "—"}</td>` : ""}<td>${pct(m.acc / m.races)}</td></tr>`).join("")}
         </tbody></table></section>
       <section><h2>Last 20 races</h2><table><thead><tr><th>Race</th><th>Date</th><th>WPM</th><th>Quote</th>${multi ? "<th>Outcome</th>" : ""}<th>Acc.</th>${ranked ? "<th>pp</th>" : ""}</tr></thead><tbody>
         ${s.last20.map((r) => {
           const me = r.match?.players.find((p) => p.userId === r.userId);
-          const outcome = multi ? `<td>${isWin(r) ? "Win" : "No win"} (${me?.placement ?? "?"} of ${r.match.players.length})</td>` : "";
+          const outcome = !multi ? "" : `<td>${r.match ? `${isWin(r) ? "Win" : "No win"} (${me?.placement ?? "?"} of ${r.match.players.length})` : "Solo"}</td>`;
           const text = quoteText.get(r.quoteId) || r.quoteId || "custom text";
           return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td>${outcome}<td>${pct(r.accuracy)}</td>${ranked ? `<td>${f(r.pp)}</td>` : ""}</tr>`;
         }).join("")}
