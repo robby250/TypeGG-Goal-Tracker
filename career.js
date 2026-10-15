@@ -47,8 +47,9 @@ function computeStats(races, bests) {
   const quoteBest = new Map(); // quoteId → best wpm within these races
   for (const r of rs) {
     const k = monthKey(r.timestamp);
-    const m = months.get(k) || { month: k, races: 0, multi: 0, wpm: 0, best: 0, wins: 0, acc: 0 };
+    const m = months.get(k) || { month: k, races: 0, multi: 0, wpm: 0, best: 0, pp: 0, bestPp: 0, wins: 0, acc: 0 };
     m.races++; m.wpm += r.wpm; m.best = Math.max(m.best, r.wpm); m.acc += r.accuracy;
+    m.pp += r.pp; m.bestPp = Math.max(m.bestPp, r.pp);
     if (r.match) m.multi++;
     if (isWin(r)) m.wins++;
     months.set(k, m);
@@ -184,11 +185,14 @@ if (typeof document !== "undefined") {
     return { user, races, bests, authed: !!token, savedAt, u, token, universes: { English: { user, rankings } } };
   }
 
-  function chart(months) {
+  function chart(months, metric) {
+    const [avgOf, bestOf, unit] = metric === "pp"
+      ? [(m) => m.pp / m.races, (m) => m.bestPp, "pp"]
+      : [(m) => m.wpm / m.races, (m) => m.best, "WPM"];
     const ms = [...months].reverse();
     if (ms.length < 2) return "";
     const W = 900, H = 260, P = 36, n = ms.length;
-    const maxW = Math.max(...ms.map((m) => m.best)) * 1.05, maxR = Math.max(...ms.map((m) => m.races));
+    const maxW = Math.max(...ms.map(bestOf)) * 1.05, maxR = Math.max(...ms.map((m) => m.races));
     const x = (i) => P + (i * (W - 2 * P)) / (n - 1);
     const y = (v) => H - P - (v / maxW) * (H - 2 * P);
     const line = (fn) => ms.map((m, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(fn(m)).toFixed(1)}`).join("");
@@ -197,12 +201,12 @@ if (typeof document !== "undefined") {
     const step = Math.ceil(n / 12);
     const labels = ms.map((m, i) => (i % step ? "" : `<text x="${x(i)}" y="${H - 12}" text-anchor="middle">${m.month}</text>`)).join("");
     const grid = [0.25, 0.5, 0.75, 1].map((t) => `<line x1="${P}" x2="${W - P}" y1="${y(maxW * t)}" y2="${y(maxW * t)}"/><text x="4" y="${y(maxW * t) + 4}">${Math.round(maxW * t)}</text>`).join("");
-    const dots = ms.map((m, i) => `<circle cx="${x(i)}" cy="${y(m.wpm / m.races)}" r="3"><title>${m.month}: avg ${f(m.wpm / m.races)} · best ${f(m.best)}</title></circle>`).join("");
-    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly average and best WPM, with race counts as bars">
+    const dots = ms.map((m, i) => `<circle cx="${x(i)}" cy="${y(avgOf(m))}" r="3"><title>${m.month}: avg ${f(avgOf(m))} · best ${f(bestOf(m))} ${unit}</title></circle>`).join("");
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly average and best ${unit}, with race counts as bars">
       <g class="grid">${grid}</g>${bars}
-      <path class="best" d="${line((m) => m.best)}"/><path class="avg" d="${line((m) => m.wpm / m.races)}"/>${dots}
+      <path class="best" d="${line(bestOf)}"/><path class="avg" d="${line(avgOf)}"/>${dots}
       <g class="labels">${labels}</g></svg>
-      <div class="legend"><span class="k avg"></span>Average WPM <span class="k best"></span>Best WPM <span class="k bar"></span>Races</div>`;
+      <div class="legend"><span class="k avg"></span>Average ${unit} <span class="k best"></span>Best ${unit} <span class="k bar"></span>Races</div>`;
   }
 
   // Per-language ("universe") account stats: pp, nWPM, rank and placements are
@@ -224,8 +228,9 @@ if (typeof document !== "undefined") {
   // Ranked/unranked, multiplayer/solo and language are separate filters so none
   // skews another (unranked includes custom lobby text, quoteId null; other
   // languages type slower); "All" combines.
-  function render(data, t = { view: "ranked", mode: "multi", lang: "English" }) {
+  function render(data, t = { view: "ranked", mode: "multi", lang: "English", metric: "wpm" }) {
     const { view, mode, lang } = t;
+    const metric = view === "ranked" ? t.metric : "wpm"; // unranked races earn no pp
     const { user, authed, savedAt } = data;
     const uni = data.universes[lang];
     const rankings = uni?.rankings || {};
@@ -279,7 +284,9 @@ if (typeof document !== "undefined") {
         ${account ? row("Quote firsts / podiums / top 10", `${st.firsts} / ${st.podiums} / ${st.topTens}`) : ""}
         ${mode !== "multi" && ranked && (lang === "all" || lang === "English") ? row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`) : ""}
       </table></section>
-      <section><h2>Career by month</h2>${chart(s.months)}
+      <section><h2>Career by month</h2>
+        ${view === "ranked" ? `<div class="filters">${pick("metric", "Graph", metric, { wpm: "WPM", pp: "pp" })}</div>` : ""}
+        ${chart(s.months, metric)}
         <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th>${multi ? "<th>Wins</th><th>Win %</th>" : ""}<th>Acc.</th></tr></thead><tbody>
         ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td>${multi ? `<td>${m.wins}</td><td>${m.multi ? pct(m.wins / m.multi) : "—"}</td>` : ""}<td>${pct(m.acc / m.races)}</td></tr>`).join("")}
         </tbody></table></section>
@@ -313,7 +320,7 @@ if (typeof document !== "undefined") {
     try {
       const data = await load(username, forceFull);
       // Filters persist across opens; a saved language this player never typed falls back to English.
-      const t = { view: "ranked", mode: "multi", lang: "English", ...JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}") };
+      const t = { view: "ranked", mode: "multi", lang: "English", metric: "wpm", ...JSON.parse(localStorage.getItem(FILTERS_KEY) || "{}") };
       if (t.lang !== "all" && !data.bests.some((b) => b.quote.language === t.lang)) t.lang = "English";
       await universe(data, t.lang).catch(() => {});
       render(data, t);

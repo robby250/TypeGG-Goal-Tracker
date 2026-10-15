@@ -18,6 +18,7 @@ const s = computeStats(races.filter((r) => r.match), bests); // render() splits 
 assert.equal(s.races, 3);
 assert.deepEqual(s.months.map((m) => [m.month, m.races, m.wins]), [["2026-01", 3, 2]]);
 assert.equal(s.wins, 2);
+assert.deepEqual([s.months[0].pp, s.months[0].bestPp], [300, 100]); // graph pp metric
 assert.equal(s.bestWpm, 200);
 assert.equal(s.avgWpm, 410 / 3);
 assert.deepEqual(s.marathon, { races: 2, start: "2026-01-10T12:00:00" }); // race 4 is exactly 24h after race 3
