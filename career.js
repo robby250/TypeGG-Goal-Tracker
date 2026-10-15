@@ -19,10 +19,9 @@ function isWin(r) {
 }
 
 // races: API race objects (any order, may include quits); bests: quote-bests list.
-// Only finished multiplayer races count, like typeracerdata: solo races are
-// retries of chosen quotes, and the public API hides every non-PB one anyway.
+// Callers pass one mode (solo or multiplayer) at a time; mixing them blurs both.
 function computeStats(races, bests) {
-  const rs = races.filter((r) => r.completionType === "finished" && r.match)
+  const rs = races.filter((r) => r.completionType === "finished")
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
   const wpms = rs.map((r) => r.wpm);
   const lang = new Map(bests.map((b) => [b.quote.quoteId, b.quote.language]));
@@ -113,10 +112,23 @@ if (typeof document !== "undefined") {
     }
   }
 
-  // No session token needed: the public API returns every multiplayer race.
-  async function api(path) {
+  // Public requests get every multiplayer race but only the best solo race per
+  // quote; the player's own session token unlocks all their solo races. The
+  // session is an httpOnly cookie with an undocumented name, so take any
+  // typegg.io cookie whose value is (or wraps) a JWT.
+  async function sessionToken() {
+    const jwt = /^[\w-]+\.[\w-]+\.[\w-]+$/;
+    for (const c of await chrome.cookies.getAll({ domain: "typegg.io" })) {
+      const v = decodeURIComponent(c.value);
+      if (jwt.test(v)) return v;
+      try { const t = JSON.parse(v)?.token; if (jwt.test(t)) return t; } catch {}
+    }
+    return null;
+  }
+
+  async function api(path, token) {
     // A tripped per-IP limit comes back without CORS headers, so fetch rejects instead of returning 429.
-    const r = await fetch(API + path)
+    const r = await fetch(API + path, token ? { headers: { Authorization: `Bearer ${token}` } } : {})
       .catch(() => { throw new Error("TypeGG API unreachable (usually the rate limit) — wait a minute and reload."); });
     if (r.status === 429) throw new Error("TypeGG rate limit hit — wait a minute and reload.");
     if (!r.ok) throw Object.assign(new Error(`${path} → HTTP ${r.status}`), { status: r.status });
@@ -124,11 +136,11 @@ if (typeof document !== "undefined") {
   }
 
   // Sequential paging keeps us well under the per-IP rate limit.
-  async function allPages(path, field, label) {
+  async function allPages(path, field, token, label) {
     const out = [];
     for (let page = 1, total = 1; page <= total; page++) {
       status(`Loading ${label} (page ${page}/${total})…`);
-      const d = await api(`${path}${path.includes("?") ? "&" : "?"}perPage=1000&page=${page}`);
+      const d = await api(`${path}${path.includes("?") ? "&" : "?"}perPage=1000&page=${page}`, token);
       out.push(...d[field]);
       total = d.totalPages || 1;
     }
@@ -136,9 +148,16 @@ if (typeof document !== "undefined") {
   }
 
   async function load(username, forceFull) {
+    const { gtAuthUser } = await chrome.storage.local.get("gtAuthUser");
+    const own = !!gtAuthUser && gtAuthUser.toLowerCase() === username.toLowerCase();
+    let token = own ? await sessionToken() : null;
     const u = encodeURIComponent(username);
-    const user = await api(`/users/${u}`);
-    const key = `${username.toLowerCase()}|multi`;
+
+    let user;
+    try { user = await api(`/users/${u}`, token); }
+    catch (e) { if (e.status !== 401 || !token) throw e; token = null; user = await api(`/users/${u}`); }
+
+    const key = `${username.toLowerCase()}|${token ? "auth" : "public"}`;
     let rec = await tx("readonly", (s) => s.get(key));
     if (forceFull || !rec || Date.now() - rec.savedAt > FULL_REFETCH_MS) rec = null;
 
@@ -146,17 +165,17 @@ if (typeof document !== "undefined") {
     let races, bests;
     if (rec) {
       const from = Math.max(0, ...rec.races.map((r) => r.raceNumber || 0)) + 1;
-      const fresh = (await allPages(`/users/${u}/races?gamemode=multiplayer&startNumber=${from}`, "races", "new races")).filter(keep);
+      const fresh = (await allPages(`/users/${u}/races?startNumber=${from}`, "races", token, "new races")).filter(keep);
       races = rec.races.concat(fresh);
-      bests = fresh.length ? await allPages(`/users/${u}/quotes?status=any`, "quotes", "quote bests") : rec.bests;
+      bests = fresh.length ? await allPages(`/users/${u}/quotes?status=any`, "quotes", token, "quote bests") : rec.bests;
     } else {
-      races = (await allPages(`/users/${u}/races?gamemode=multiplayer`, "races", "races")).filter(keep);
-      bests = await allPages(`/users/${u}/quotes?status=any`, "quotes", "quote bests");
+      races = (await allPages(`/users/${u}/races`, "races", token, "races")).filter(keep);
+      bests = await allPages(`/users/${u}/quotes?status=any`, "quotes", token, "quote bests");
     }
-    const rankings = await api(`/users/${u}/quote-rankings?maxRank=100`);
+    const rankings = await api(`/users/${u}/quote-rankings?maxRank=100`, token);
     const savedAt = rec ? rec.savedAt : Date.now();
     await tx("readwrite", (s) => s.put({ key, races, bests, savedAt, lastOpened: Date.now() }));
-    return { user, races, bests, rankings, savedAt };
+    return { user, races, bests, rankings, authed: !!token, savedAt };
   }
 
   function chart(months) {
@@ -180,33 +199,37 @@ if (typeof document !== "undefined") {
       <div class="legend"><span class="k avg"></span>Average WPM <span class="k best"></span>Best WPM <span class="k bar"></span>Races</div>`;
   }
 
-  // Ranked and unranked races are separate tabs, never mixed: unranked quotes
-  // (and custom lobby text, quoteId null) would skew the ranked career.
-  function render(data, view = "ranked") {
-    const { user, rankings, savedAt } = data;
-    const ranked = view === "ranked";
+  // Ranked/unranked and multiplayer/solo are separate tabs, never mixed:
+  // unranked quotes (and custom lobby text, quoteId null) would skew ranked,
+  // and solo retries of chosen quotes would skew multiplayer.
+  function render(data, view = "ranked", mode = "multi") {
+    const { user, rankings, authed, savedAt } = data;
+    const ranked = view === "ranked", multi = mode === "multi";
     const bests = data.bests.filter((b) => !!b.quote.ranked === ranked);
     const ids = new Set(data.bests.filter((b) => b.quote.ranked).map((b) => b.quote.quoteId));
-    const races = data.races.filter((r) => ids.has(r.quoteId) === ranked);
+    const races = data.races.filter((r) => ids.has(r.quoteId) === ranked && !!r.match === multi);
     const s = computeStats(races, bests);
     const st = user.stats;
     const quoteText = new Map(bests.map((b) => [b.quote.quoteId, b.quote.text]));
     const row = (k, v) => `<tr><th>${k}</th><td>${v}</td></tr>`;
     const ranks = Object.entries(rankings.positionCounts || {}).map(([k, v]) => [+k, v]).sort((a, b) => a[0] - b[0]);
     const maxRank = Math.max(1, ...ranks.map((r) => r[1]));
+    const tabs = (attr, cur, opts) => `<nav class="tabs">${Object.entries(opts).map(([v, label]) => `<button data-${attr}="${v}" class="${v === cur ? "on" : ""}">${label}</button>`).join("")}</nav>`;
+    const apiTotal = !ranked ? "—" : (multi ? st.quickplayRaces + st.lobbyRaces : st.soloRaces).toLocaleString();
 
     document.title = `${user.username} — TypeGG career`;
     $("content").innerHTML = `
       <h1>${flag(user.country)} <a href="https://typegg.io/user/${encodeURIComponent(user.username)}" target="_blank">${esc(user.displayName || user.username)}</a></h1>
-      <p class="sub">Multiplayer races only · joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
-      <nav class="tabs">${["ranked", "unranked"].map((v) => `<button data-view="${v}" class="${v === view ? "on" : ""}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</nav>
+      <p class="sub">Joined ${new Date(user.joinDate).toLocaleDateString()} · global rank #${user.globalRank} · history cached ${date(savedAt)}</p>
+      <div class="tabrow">${tabs("mode", mode, { multi: "Multiplayer", solo: "Solo" })}${tabs("view", view, { ranked: "Ranked", unranked: "Unranked" })}</div>
+      ${!multi && !authed ? `<p class="note">Public data: TypeGG only exposes this player's best solo race per quote, so these solo stats cover PBs only.</p>` : ""}
       <section><h2>Summary</h2><table class="kv">
-        ${row("Races", `${s.races.toLocaleString()} <small>(API total ${(ranked ? st.quickplayRaces + st.lobbyRaces : "—").toLocaleString()})</small>`)}
+        ${row("Races", `${s.races.toLocaleString()} <small>(API total ${apiTotal})</small>`)}
         ${row("Best last 10 races", `${f(s.bestLast10)} wpm`)}
         ${row("Best single race", `${f(s.bestWpm)} wpm`)}
         ${row("Average of fastest 10", `${f(s.fastest10)} wpm`)}
         ${row("Quote bests average", `${f(s.quoteBestsAvg)} wpm (${s.quotes.toLocaleString()} quotes)`)}
-        ${row("Wins", `${s.wins.toLocaleString()} (${pct(s.races ? s.wins / s.races : 0)})`)}
+        ${multi ? row("Wins", `${s.wins.toLocaleString()} (${pct(s.races ? s.wins / s.races : 0)})`) : ""}
         ${ranked ? row("Total pp", f(st.totalPp)) + row("nWPM", f(st.nWpm)) : ""}
         ${row("Average career speed", `${f(s.avgWpm)} wpm`)}
         ${row("Accuracy", pct(s.accuracy))}
@@ -218,15 +241,15 @@ if (typeof document !== "undefined") {
         ${row("Daily quote streak", `${st.dailyQuotes?.streak ?? 0} (best ${st.dailyQuotes?.bestStreak ?? 0}, ${st.dailyQuotes?.completed ?? 0} done)`)}
       </table></section>
       <section><h2>Career by month</h2>${chart(s.months)}
-        <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th><th>Wins</th><th>Win %</th><th>Acc.</th></tr></thead><tbody>
-        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td><td>${m.wins}</td><td>${pct(m.wins / m.races)}</td><td>${pct(m.acc / m.races)}</td></tr>`).join("")}
+        <table><thead><tr><th>Month</th><th>Average</th><th>Best</th><th>Races</th>${multi ? "<th>Wins</th><th>Win %</th>" : ""}<th>Acc.</th></tr></thead><tbody>
+        ${s.months.map((m) => `<tr><td>${m.month}</td><td>${f(m.wpm / m.races)}</td><td>${f(m.best)}</td><td>${m.races}</td>${multi ? `<td>${m.wins}</td><td>${pct(m.wins / m.races)}</td>` : ""}<td>${pct(m.acc / m.races)}</td></tr>`).join("")}
         </tbody></table></section>
-      <section><h2>Last 20 races</h2><table><thead><tr><th>Race</th><th>Date</th><th>WPM</th><th>Quote</th><th>Outcome</th><th>Acc.</th>${ranked ? "<th>pp</th>" : ""}</tr></thead><tbody>
+      <section><h2>Last 20 races</h2><table><thead><tr><th>Race</th><th>Date</th><th>WPM</th><th>Quote</th>${multi ? "<th>Outcome</th>" : ""}<th>Acc.</th>${ranked ? "<th>pp</th>" : ""}</tr></thead><tbody>
         ${s.last20.map((r) => {
           const me = r.match?.players.find((p) => p.userId === r.userId);
-          const outcome = `${isWin(r) ? "Win" : "No win"} (${me?.placement ?? "?"} of ${r.match.players.length})`;
+          const outcome = multi ? `<td>${isWin(r) ? "Win" : "No win"} (${me?.placement ?? "?"} of ${r.match.players.length})</td>` : "";
           const text = quoteText.get(r.quoteId) || r.quoteId || "custom text";
-          return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td><td>${outcome}</td><td>${pct(r.accuracy)}</td>${ranked ? `<td>${f(r.pp)}</td>` : ""}</tr>`;
+          return `<tr><td>${r.raceNumber}</td><td>${date(r.timestamp)}</td><td>${f(r.wpm)}</td><td class="quote"><a href="https://typegg.io/solo/${encodeURIComponent(r.quoteId || "")}" target="_blank">${esc(text.slice(0, 60))}${text.length > 60 ? "…" : ""}</a></td>${outcome}<td>${pct(r.accuracy)}</td>${ranked ? `<td>${f(r.pp)}</td>` : ""}</tr>`;
         }).join("")}
         </tbody></table></section>
       <section><h2>Languages</h2><table><thead><tr><th>Language</th><th>Races</th><th>Best race</th><th>Quote bests avg</th><th>Quotes</th><th>Last race</th></tr></thead><tbody>
@@ -235,7 +258,7 @@ if (typeof document !== "undefined") {
       ${ranked ? `<section><h2>Quote leaderboard placements</h2><p class="sub">How many quotes you place #1…#100 on (${(rankings.quotesTyped || 0).toLocaleString()} quotes typed).</p>
         <div class="hist">${ranks.map(([k, v]) => `<div class="col" title="#${k}: ${v} quotes"><div style="height:${(v / maxRank) * 100}%"></div></div>`).join("")}</div>
         <div class="hist-axis"><span>#1</span><span>#${ranks.at(-1)?.[0] ?? 100}</span></div></section>` : ""}`;
-    for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => render(data, b.dataset.view);
+    for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => render(data, b.dataset.view || view, b.dataset.mode || mode);
   }
 
   async function show(forceFull) {
@@ -246,7 +269,7 @@ if (typeof document !== "undefined") {
     try {
       const data = await load(username, forceFull);
       render(data);
-      status("");
+      status(data.authed ? "Full solo history (logged in as this player)." : "");
     } catch (e) {
       status(`Error: ${e.message}`);
     }

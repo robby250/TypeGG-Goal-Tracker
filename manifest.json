@@ -4,7 +4,8 @@
   "version": "13.0",
   "description": "Track your goals directly on TypeGG",
   "permissions": [
-    "storage"
+    "storage",
+    "cookies"
   ],
   "host_permissions": [
     "*://*.typegg.io/*"

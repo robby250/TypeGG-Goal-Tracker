@@ -39,3 +39,4 @@ svg .bar { fill: rgba(156, 163, 175, 0.25); }
 .hist-axis { display: flex; justify-content: space-between; color: #9ca3af; font-size: 11px; }
 .tabs { display: flex; gap: 6px; margin: 12px 0 0; }
 .tabs button.on { background: #1e3a5f; border-color: #3b82f6; color: #bfdbfe; }
+.tabrow { display: flex; gap: 18px; flex-wrap: wrap; }
