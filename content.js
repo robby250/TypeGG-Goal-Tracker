@@ -15261,6 +15261,25 @@ async function getExpRankByUsername(username) {
     else if (!onProfile && careerBtn.isConnected) careerBtn.remove();
   }, 1000);
 
+  // ── Keyboard language follows the quote ─────────────────────
+  // background.js hands changes to the kb-lang native host; null = left the
+  // quote / tab / window, which restores the layout used before TypeGG.
+  let kbLangSent;
+  async function syncKbLang() {
+    const qid = !document.hidden && document.hasFocus() ? getCurrentQuoteIdLive() : null;
+    let lang = null;
+    if (qid) {
+      try { lang = quoteCatalog[qid]?.lang || (await getQuote(qid)).language; } catch { return; }
+    }
+    if (lang === kbLangSent || !chrome.runtime?.id) return;
+    kbLangSent = lang;
+    chrome.runtime.sendMessage({ kbLang: lang }).catch(() => {});
+  }
+  setInterval(syncKbLang, 500);
+  window.addEventListener("focus", syncKbLang);
+  window.addEventListener("blur", syncKbLang);
+  document.addEventListener("visibilitychange", syncKbLang);
+
   const pollAuth = () => refreshAuth().then(checkAuthTransition);
   pollAuth();
   setInterval(pollAuth, 15_000);

@@ -5,8 +5,13 @@
   "description": "Track your goals directly on TypeGG",
   "permissions": [
     "storage",
-    "cookies"
+    "cookies",
+    "nativeMessaging"
   ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
   "host_permissions": [
     "*://*.typegg.io/*"
   ],
