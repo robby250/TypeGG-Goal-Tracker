@@ -4709,13 +4709,13 @@ function gtMain() {
   // "no such rank" about a goal the poller would happily track (or vice
   // versa) would be worse than either behaviour on its own.
   const GT_LEADERS_PER_PAGE = 20;
-  function leadersUrl(page, country) {
-    let path = `https://api.typegg.io/v1/leaders?sort=totalPp&page=${page}&perPage=${GT_LEADERS_PER_PAGE}`;
+  function leadersUrl(page, country, sort = "totalPp") {
+    let path = `https://api.typegg.io/v1/leaders?sort=${sort}&page=${page}&perPage=${GT_LEADERS_PER_PAGE}`;
     if (country) path += `&country=${encodeURIComponent(country)}`;
     return withLang(path);
   }
-  async function fetchLeaderRows(page, country) {
-    const r = await gtApiFetch(leadersUrl(page, country), {});
+  async function fetchLeaderRows(page, country, sort) {
+    const r = await gtApiFetch(leadersUrl(page, country, sort), {});
     if (!r.ok) throw new Error("Leaderboard fetch failed");
     const rows = (await r.json()).users || [];
     // Refusing rows from the wrong country matters: if the filter were ever
@@ -4763,6 +4763,16 @@ function gtMain() {
     if (!r.ok) throw new Error(`leaders/rank ${sort} failed: ${r.status}`);
     return r.json(); // { rank, value, valueUntilNextRank }
   }
+  // TypeGG zeroed chars/playtime on /v1/users (Oct 2026); the leaderboard row
+  // still carries them. ponytail: the board lists only the top 1000 by chars —
+  // below that this returns null and chars/playtime goals stay at 0.
+  async function fetchLeaderStats(username) {
+    const r = await leadersRankCalc("charactersTyped", { userId: username });
+    if (!r) return null;
+    const rows = await fetchLeaderRows(Math.ceil(r.rank / GT_LEADERS_PER_PAGE), null, "charactersTyped");
+    return rows.find(x => x.username?.toLowerCase() === username.toLowerCase())?.stats ?? null;
+  }
+
   // PP (totalPp) may use the fast endpoint only in the English world, because
   // /leaders/rank can't scope PP by language universe. EXP is global — always fast.
   const GT_FAST_PP = (GT_LANGUAGE === "English");
@@ -8896,7 +8906,7 @@ async function getExpRankByUsername(username) {
     // Only hit the unranked-quotes endpoint when an unranked/all goal
     // actually needs it — ranked goals are fully covered by quotesTyped.
     const needUnranked = quotesNeedUnrankedData();
-    const [response, unrankedTyped] = await Promise.all([
+    const [response, unrankedTyped, leaderStats] = await Promise.all([
       gtApiFetch(userEndpoint(), {}, { lane: "urgent" }),
       needUnranked
         ? getUserQuotesTyped("unranked").catch(e => {
@@ -8904,6 +8914,10 @@ async function getExpRankByUsername(username) {
             return undefined; // leave currentStats.quotesUnranked untouched on failure
           })
         : Promise.resolve(undefined),
+      fetchLeaderStats(getAuth().username).catch(e => {
+        console.error("Leader stats fetch failed:", e.message);
+        return null;
+      }),
     ]);
     if (!response.ok) throw new Error(`User fetch failed: ${response.status}`);
     const data = await response.json();
@@ -8913,14 +8927,14 @@ async function getExpRankByUsername(username) {
       races:          data.stats?.races,
       quotes:         data.stats?.quotesTyped,
       quotesUnranked: unrankedTyped,
-      playtime:       data.stats?.playTime,
+      playtime:       leaderStats?.playTime ?? data.stats?.playTime,
       rank:           data.globalRank ?? null,
       // Country board position (and which board it is). Needed so a
       // country-filtered PP rank goal can tell whether the user is already
       // above its target rank — globalRank says nothing about that.
       country:        data.country ?? null,
       countryRank:    data.countryRank ?? null,
-      chars:          data.stats?.completionCharactersTyped,
+      chars:          leaderStats?.completionCharactersTyped ?? data.stats?.completionCharactersTyped,
       quickplayRaces: data.stats?.quickplayRaces,
       soloRaces:      data.stats?.soloRaces,
     };
@@ -8960,6 +8974,15 @@ async function getExpRankByUsername(username) {
     currentStats.chars          = data.chars;
     currentStats.quickplayRaces = data.quickplayRaces;
     currentStats.soloRaces      = data.soloRaces;
+    // Goals seeded while TypeGG reported chars/playtime as 0 would count the
+    // whole lifetime total as gain once real values return: re-baseline them.
+    for (const type of ["chars", "playtime"]) {
+      const key = GOAL_CONFIG[type].baselineKey;
+      const goals = goalData[type] || [];
+      if (!(currentStats[type] > 0) || !goals.some(g => g[key] === 0)) continue;
+      goals.forEach(g => { if (g[key] === 0) g[key] = currentStats[type]; });
+      saveGoals(type);
+    }
     const gtDiff = gtStatsDiff(gtPrevSnap, currentStats,
       ["exp", "pp", "races", "quotes", "quotesUnranked", "playtime", "rank", "countryRank", "chars", "quickplayRaces", "soloRaces"]);
     if (Object.keys(gtDiff).length > 0) {
